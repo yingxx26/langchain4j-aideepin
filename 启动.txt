@@ -1,0 +1,2 @@
+启动neo4j
+neo4j console
