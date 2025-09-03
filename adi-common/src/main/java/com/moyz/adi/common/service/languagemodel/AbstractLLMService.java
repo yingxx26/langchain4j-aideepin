@@ -102,7 +102,7 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
 
     public abstract TokenCountEstimator getTokenEstimator();
 
-    /**
+    /**  todo  yingxx
      * 普通聊天，将原始的用户问题及历史消息发送给AI
      *
      * @param params   请求参数
@@ -119,9 +119,11 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
         }
         ChatModelParams chatModelParams = params.getChatModelParams();
         log.info("sseChat,messageId:{}", chatModelParams.getMemoryId());
+         // 组装消息
         List<ChatMessage> chatMessages = createChatMessages(chatModelParams);
+        // 设置模型参数
         StreamingChatModel streamingChatModel = buildStreamingChatModel(params.getLlmBuilderProperties());
-
+        // 设置工具参数
         ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages);
         InnerStreamChatParams innerStreamChatParams = InnerStreamChatParams.builder()
                 .uuid(params.getUuid())

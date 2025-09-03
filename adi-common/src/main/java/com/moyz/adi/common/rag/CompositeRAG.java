@@ -120,6 +120,7 @@ public class CompositeRAG {
                     .queryTransformer(queryTransformer)
                     .queryRouter(queryRouter)
                     .build();
+            //todo yingxx 核心
             IStreamingChatAssistant assistant = AiServices.builder(IStreamingChatAssistant.class)
                     .streamingChatModel(llmService.buildStreamingChatModel(params.getLlmBuilderProperties()))
                     .retrievalAugmentor(retrievalAugmentor)

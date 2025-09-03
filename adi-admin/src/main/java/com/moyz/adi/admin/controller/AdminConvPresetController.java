@@ -11,7 +11,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
-
+//系统提示词
 @RestController
 @RequestMapping("/admin/conv-preset")
 @Validated

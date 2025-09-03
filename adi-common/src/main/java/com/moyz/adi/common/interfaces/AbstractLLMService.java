@@ -109,7 +109,7 @@ public abstract class AbstractLLMService<T> {
 
     public abstract TokenCountEstimator getTokenEstimator();
 
-    /**
+    /**  todo yingxx  核心
      * 普通聊天，将原始的用户问题及历史消息发送给AI
      *
      * @param params   请求参数
