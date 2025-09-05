@@ -43,7 +43,7 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 上传、解析并索引文档
+     * 上传、解析并索引文档  向量化
      *
      * @param uuid             知识库uuid
      * @param indexAfterUpload 是否上传完接着索引文档
