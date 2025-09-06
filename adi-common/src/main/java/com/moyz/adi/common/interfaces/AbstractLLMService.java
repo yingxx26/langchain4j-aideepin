@@ -126,9 +126,12 @@ public abstract class AbstractLLMService<T> {
         }
         ChatModelParams chatModelParams = params.getChatModelParams();
         log.info("sseChat,messageId:{}", chatModelParams.getMemoryId());
+        //组装消息
         List<ChatMessage> chatMessages = createChatMessages(chatModelParams);
-        StreamingChatModel streamingChatModel = buildStreamingChatModel(params.getLlmBuilderProperties());
 
+        //设置模型参数
+        StreamingChatModel streamingChatModel = buildStreamingChatModel(params.getLlmBuilderProperties());
+        //设置工具参数
         ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages);
         InnerStreamChatParams innerStreamChatParams = InnerStreamChatParams.builder()
                 .uuid(params.getUuid())
@@ -136,8 +139,8 @@ public abstract class AbstractLLMService<T> {
                 .chatRequest(chatRequest)
                 .sseEmitter(params.getSseEmitter())
                 .mcpClients(params.getChatModelParams().getMcpClients())
-                .shutdownSse(shutdownSse)
-                .consumer(consumer)
+                //.shutdownSse(shutdownSse)
+                //.consumer(consumer)
                 .build();
         try {
             innerStreamingChat(innerStreamChatParams);
@@ -186,8 +189,8 @@ public abstract class AbstractLLMService<T> {
                     // recursive call now with tool calling results
                     innerStreamingChat(params);
                 } else {
-                    Pair<PromptMeta, AnswerMeta> pair = SSEEmitterHelper.calculateTokenAndShutdown(response, params.getSseEmitter(), params.getUuid(), params.isShutdownSse());
-                    params.getConsumer().accept(response.aiMessage().text(), pair.getLeft(), pair.getRight());
+                  //  Pair<PromptMeta, AnswerMeta> pair = SSEEmitterHelper.calculateTokenAndShutdown(response, params.getSseEmitter(), params.getUuid(), params.isShutdownSse());
+                   // params.getConsumer().accept(response.aiMessage().text(), pair.getLeft(), pair.getRight());
                     params.getMcpClients().forEach(item -> {
                         try {
                             item.close();

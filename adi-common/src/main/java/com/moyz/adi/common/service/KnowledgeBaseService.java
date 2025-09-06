@@ -430,11 +430,14 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
             }
         } else {
             log.info("进行RAG请求,maxResults:{}", maxResults);
+            //构建聊天模型
             ChatModel chatModel = LLMContext.getLLMServiceById(knowledgeBase.getIngestModelId()).buildChatLLM(
                     LLMBuilderProperties.builder()
                             .temperature(knowledgeBase.getQueryLlmTemperature())
                             .build());
+           ///构建知识库检索
             List<ContentRetriever> retrievers = compositeRAG.createRetriever(chatModel, new IsEqualTo(AdiConstant.MetadataKey.KB_UUID, qaRecord.getKbUuid()), maxResults, knowledgeBase.getRetrieveMinScore(), knowledgeBase.getIsStrict());
+            //发起提问
             compositeRAG.ragChat(retrievers, sseAskParams, (response, promptMeta, answerMeta) -> {
                         sseEmitterHelper.sendComplete(user.getId(), sseAskParams.getSseEmitter());
                         updateQaRecord(
