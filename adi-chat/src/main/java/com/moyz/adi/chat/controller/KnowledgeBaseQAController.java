@@ -38,6 +38,7 @@ public class KnowledgeBaseQAController {
         return knowledgeBaseQaService.add(knowledgeBase, req);
     }
 
+    //核心api
     @Operation(summary = "流式响应")
     @PostMapping(value = "/process/{qaRecordUuid}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter sseAsk(@PathVariable String qaRecordUuid) {

@@ -5,12 +5,13 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.moyz.adi.common.base.ThreadContext;
 import com.moyz.adi.common.cosntant.AdiConstant;
 import com.moyz.adi.common.dto.AskReq;
-import com.moyz.adi.common.entity.*;
+import com.moyz.adi.common.entity.AiModel;
+import com.moyz.adi.common.entity.Conversation;
+import com.moyz.adi.common.entity.ConversationMessage;
+import com.moyz.adi.common.entity.User;
 import com.moyz.adi.common.enums.ChatMessageRoleEnum;
 import com.moyz.adi.common.enums.ErrorEnum;
 import com.moyz.adi.common.exception.BaseException;
-import com.moyz.adi.common.file.FileOperatorContext;
-import com.moyz.adi.common.file.LocalFileUtil;
 import com.moyz.adi.common.helper.AsrModelContext;
 import com.moyz.adi.common.helper.LLMContext;
 import com.moyz.adi.common.helper.QuotaHelper;
@@ -31,11 +32,9 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import ws.schild.jave.info.MultimediaInfo;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 import static com.moyz.adi.common.enums.ErrorEnum.A_CONVERSATION_NOT_FOUND;
 import static com.moyz.adi.common.enums.ErrorEnum.B_MESSAGE_NOT_FOUND;
@@ -158,9 +157,6 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         sseAskParams.setSseEmitter(sseEmitter);
         sseAskParams.setRegenerateQuestionUuid(askReq.getRegenerateQuestionUuid());
 
-        int answerContentType = getAnswerContentType(conversation, askReq);
-        sseAskParams.setAnswerContentType(answerContentType);
-
         ChatModelParams chatModelParams = buildChatModelParams(conversation, askReq);
         sseAskParams.setChatModelParams(chatModelParams);
 
@@ -169,25 +165,8 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
                         .temperature(conversation.getLlmTemperature())
                         .build()
         );
-        sseEmitterHelper.call(sseAskParams, (response, questionMeta, answerMeta) -> {
-
-            AudioInfo audioInfo = null;
-            if (StringUtils.isNotBlank(response.getAudioPath())) {
-
-                audioInfo = new AudioInfo();
-                MultimediaInfo multimediaInfo = LocalFileUtil.getAudioFileInfo(response.getAudioPath());
-                if (null != multimediaInfo) {
-                    audioInfo.setDuration((int) multimediaInfo.getDuration() / 1000);
-                }
-                audioInfo.setPath(response.getAudioPath());
-                //存储到数据库并返回真实的URL
-                AdiFile adiFile = fileService.saveFromPath(user, response.getAudioPath());
-                audioInfo.setUuid(adiFile.getUuid());
-                audioInfo.setUrl(FileOperatorContext.getFileUrl(adiFile));
-            }
-            sseEmitterHelper.sendComplete(user.getId(), sseEmitter, questionMeta, answerMeta, audioInfo);
-            self.saveAfterAiResponse(user, askReq, response, questionMeta, answerMeta, audioInfo);
-        });
+        //发起聊天
+        sseEmitterHelper.call(sseAskParams, true, (response, questionMeta, answerMeta) -> self.saveAfterAiResponse(user, askReq, response, questionMeta, answerMeta));
     }
 
     public List<ConversationMessage> listQuestionsByConvId(long convId, long maxId, int pageSize) {
@@ -202,7 +181,7 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
     }
 
     @Transactional
-    public void saveAfterAiResponse(User user, AskReq askReq, LLMResponseContent response, PromptMeta questionMeta, AnswerMeta answerMeta, AudioInfo audioInfo) {
+    public void saveAfterAiResponse(User user, AskReq askReq, String response, PromptMeta questionMeta, AnswerMeta answerMeta) {
         Conversation conversation;
         String prompt = askReq.getPrompt();
         String convUuid = askReq.getConversationUuid();
@@ -217,7 +196,7 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         if (StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid())) {
             promptMsg = getPromptMsgByQuestionUuid(askReq.getRegenerateQuestionUuid());
         } else {
-            //Save new question message
+            //保存人提问的消息
             ConversationMessage question = new ConversationMessage();
             question.setUserId(user.getId());
             question.setUuid(questionMeta.getUuid());
@@ -236,31 +215,27 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
             promptMsg = this.lambdaQuery().eq(ConversationMessage::getUuid, questionMeta.getUuid()).one();
         }
 
-        //save response message
+        //保存ai回复的消息
         ConversationMessage aiAnswer = new ConversationMessage();
         aiAnswer.setUserId(user.getId());
         aiAnswer.setUuid(answerMeta.getUuid());
         aiAnswer.setConversationId(conversation.getId());
         aiAnswer.setConversationUuid(convUuid);
         aiAnswer.setMessageRole(ChatMessageRoleEnum.ASSISTANT.getValue());
-        aiAnswer.setRemark(response.getContent());
-        aiAnswer.setAudioUuid(null == audioInfo ? "" : Objects.toString(audioInfo.getUuid(), ""));
-        aiAnswer.setAudioDuration(null == audioInfo ? 0 : audioInfo.getDuration());
+        aiAnswer.setRemark(response);
         aiAnswer.setTokens(answerMeta.getTokens());
         aiAnswer.setParentMessageId(promptMsg.getId());
         aiAnswer.setAiModelId(aiModel.getId());
-        int answerContentType = getAnswerContentType(conversation, askReq);
-        aiAnswer.setContentType(answerContentType);
         baseMapper.insert(aiAnswer);
-
+        //计算消耗的token
         calcTodayCost(user, conversation, questionMeta, answerMeta, aiModel.getIsFree());
 
-        //Save response to memory
+        //保存消息到记忆库里
         if (Boolean.TRUE.equals(conversation.getUnderstandContextEnable())) {
             MapDBChatMemoryStore mapDBChatMemoryStore = MapDBChatMemoryStore.getSingleton();
             List<ChatMessage> messages = mapDBChatMemoryStore.getMessages(askReq.getConversationUuid());
             List<ChatMessage> newMessages = new ArrayList<>(messages);
-            newMessages.add(AiMessage.aiMessage(response.getContent()));
+            newMessages.add(AiMessage.aiMessage(response));
             mapDBChatMemoryStore.updateMessages(askReq.getConversationUuid(), newMessages);
         }
     }
@@ -269,12 +244,12 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
 
         int todayTokenCost = questionMeta.getTokens() + answerMeta.getTokens();
         try {
-            //calculate conversation tokens
+            //计算对话消耗的token
             conversationService.lambdaUpdate()
                     .eq(Conversation::getId, conversation.getId())
                     .set(Conversation::getTokens, conversation.getTokens() + todayTokenCost)
                     .update();
-
+            //计算用户消耗的token
             userDayCostService.appendCostToUser(user, todayTokenCost, isFreeToken);
         } catch (Exception e) {
             log.error("calcTodayCost error", e);
@@ -334,22 +309,6 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         }
         builder.mcpClients(mcpClients);
         return builder.build();
-    }
-
-    /**
-     * 获取响应内容类型
-     *
-     * @param conversation 对话
-     * @param askReq       请求参数
-     * @return 响应内容类型
-     */
-    private int getAnswerContentType(Conversation conversation, AskReq askReq) {
-        int answerContentType = conversation.getAnswerContentType();
-        //如果设置了响应内容类型为自动，并且用户输入是音频，则响应内容类型设置为音频
-        if (answerContentType == AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUTO && StringUtils.isNotBlank(askReq.getAudioUuid())) {
-            answerContentType = AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUDIO;
-        }
-        return answerContentType;
     }
 
 }

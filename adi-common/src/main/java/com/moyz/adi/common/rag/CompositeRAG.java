@@ -110,16 +110,19 @@ public class CompositeRAG {
         TokenStream tokenStream;
         ChatModelParams chatModelParams = params.getChatModelParams();
         if (StringUtils.isNotBlank(chatModelParams.getMemoryId())) {
+            //设置聊天记忆
             ChatMemoryProvider chatMemoryProvider = memoryId -> MessageWindowChatMemory.builder()
                     .id(memoryId)
                     .maxMessages(2)
                     .chatMemoryStore(MapDBChatMemoryStore.getSingleton())
                     .build();
+            //设置查询参数
             QueryTransformer queryTransformer = new CompressingQueryTransformer(llmService.buildChatLLM(params.getLlmBuilderProperties(), params.getUuid()));
             RetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
                     .queryTransformer(queryTransformer)
                     .queryRouter(queryRouter)
                     .build();
+            //构建聊天模型
             IStreamingChatAssistant assistant = AiServices.builder(IStreamingChatAssistant.class)
                     .streamingChatModel(llmService.buildStreamingChatModel(params.getLlmBuilderProperties()))
                     .retrievalAugmentor(retrievalAugmentor)

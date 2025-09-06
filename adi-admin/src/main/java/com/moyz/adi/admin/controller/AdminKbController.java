@@ -12,7 +12,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Knowledge Base
+ * 知识库
  */
 @RestController
 @RequestMapping("/admin/kb")
