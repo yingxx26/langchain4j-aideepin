@@ -9,7 +9,6 @@ import java.util.List;
 @Data
 public class ConvEditReq {
 
-    @NotBlank
     private String title;
 
     private String remark;
@@ -21,7 +20,11 @@ public class ConvEditReq {
 
     private List<Long> mcpIds;
 
+    private List<Long> kbIds;
+
     private Integer answerContentType;
 
     private Boolean isAutoplayAnswer;
+
+    private Boolean isEnableThinking;
 }

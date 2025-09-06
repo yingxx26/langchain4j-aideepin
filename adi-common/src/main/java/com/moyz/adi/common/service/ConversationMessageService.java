@@ -5,37 +5,49 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.moyz.adi.common.base.ThreadContext;
 import com.moyz.adi.common.cosntant.AdiConstant;
 import com.moyz.adi.common.dto.AskReq;
-import com.moyz.adi.common.entity.AiModel;
-import com.moyz.adi.common.entity.Conversation;
-import com.moyz.adi.common.entity.ConversationMessage;
-import com.moyz.adi.common.entity.User;
+import com.moyz.adi.common.dto.KbInfoResp;
+import com.moyz.adi.common.dto.RefGraphDto;
+import com.moyz.adi.common.entity.*;
 import com.moyz.adi.common.enums.ChatMessageRoleEnum;
 import com.moyz.adi.common.enums.ErrorEnum;
 import com.moyz.adi.common.exception.BaseException;
+import com.moyz.adi.common.file.FileOperatorContext;
+import com.moyz.adi.common.file.LocalFileUtil;
 import com.moyz.adi.common.helper.AsrModelContext;
 import com.moyz.adi.common.helper.LLMContext;
 import com.moyz.adi.common.helper.QuotaHelper;
 import com.moyz.adi.common.helper.SSEEmitterHelper;
 import com.moyz.adi.common.mapper.ConversationMessageMapper;
-import com.moyz.adi.common.util.LocalCache;
-import com.moyz.adi.common.util.MapDBChatMemoryStore;
-import com.moyz.adi.common.util.UuidUtil;
+import com.moyz.adi.common.rag.AdiEmbeddingStoreContentRetriever;
+import com.moyz.adi.common.rag.CompositeRAG;
+import com.moyz.adi.common.rag.GraphStoreContentRetriever;
+import com.moyz.adi.common.service.languagemodel.AbstractLLMService;
+import com.moyz.adi.common.util.*;
 import com.moyz.adi.common.vo.*;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.mcp.client.McpClient;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.query.Query;
+import dev.langchain4j.store.embedding.filter.comparison.IsIn;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import ws.schild.jave.info.MultimediaInfo;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
+import static com.moyz.adi.common.cosntant.AdiConstant.*;
+import static com.moyz.adi.common.cosntant.AdiConstant.MetadataKey.KB_UUID;
 import static com.moyz.adi.common.enums.ErrorEnum.A_CONVERSATION_NOT_FOUND;
 import static com.moyz.adi.common.enums.ErrorEnum.B_MESSAGE_NOT_FOUND;
 import static com.moyz.adi.common.util.AdiStringUtil.stringToList;
@@ -59,6 +71,15 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
     private ConversationService conversationService;
 
     @Resource
+    private ConversationMessageRefEmbeddingService conversationMessageRefEmbeddingService;
+
+    @Resource
+    private ConversationMessageRefGraphService conversationMessageRefGraphService;
+
+    @Resource
+    private CompositeRAG compositeRAG;
+
+    @Resource
     private UserMcpService userMcpService;
 
     @Resource
@@ -67,9 +88,8 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
     @Resource
     private FileService fileService;
 
-
     public SseEmitter sseAsk(AskReq askReq) {
-        SseEmitter sseEmitter = new SseEmitter();
+        SseEmitter sseEmitter = new SseEmitter(SSE_TIMEOUT);
         User user = ThreadContext.getCurrentUser();
         if (!sseEmitterHelper.checkOrComplete(user, sseEmitter)) {
             return sseEmitter;
@@ -149,6 +169,26 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
             askReq.setPrompt(audioText);
         }
 
+        AbstractLLMService<?> llmService = LLMContext.getLLMServiceByName(askReq.getModelName());
+
+        //如果关联了知识库，则先进行知识库查询
+        String retrieveContents = "";
+        List<ContentRetriever> retrievers = new ArrayList<>();
+        if (StringUtils.isNotBlank(conversation.getKbIds())) {
+            List<Long> kbIds = Arrays.stream(conversation.getKbIds().split(",")).map(Long::parseLong).toList();
+            List<KbInfoResp> filteredKb = conversationService.filterEnableKb(user, kbIds);
+            Pair<List<ContentRetriever>, String> retrievePair = retrieveContents(filteredKb, llmService, askReq);
+            retrievers.addAll(retrievePair.getLeft());
+            retrieveContents = retrievePair.getRight();
+        }
+
+        int answerContentType = getAnswerContentType(conversation, askReq);
+        boolean answerToAudio = TtsUtil.needTts(llmService.getTtsSetting(), answerContentType);
+        String processedPrompt = PromptUtil.createPrompt(askReq.getPrompt(), retrieveContents, answerToAudio ? PROMPT_EXTRA_AUDIO : "");
+        if (!Objects.equals(askReq.getPrompt(), processedPrompt)) {
+            askReq.setProcessedPrompt(processedPrompt);
+        }
+
         String questionUuid = StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid()) ? askReq.getRegenerateQuestionUuid() : UuidUtil.createShort();
         SseAskParams sseAskParams = new SseAskParams();
         sseAskParams.setUser(user);
@@ -156,17 +196,102 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         sseAskParams.setModelName(askReq.getModelName());
         sseAskParams.setSseEmitter(sseEmitter);
         sseAskParams.setRegenerateQuestionUuid(askReq.getRegenerateQuestionUuid());
+        sseAskParams.setAnswerContentType(answerContentType);
 
         ChatModelParams chatModelParams = buildChatModelParams(conversation, askReq);
         sseAskParams.setChatModelParams(chatModelParams);
 
+        AiModel aiModel = LLMContext.getLLMServiceByName(askReq.getModelName()).getAiModel();
+        boolean returnThinking = checkIfReturnThinking(aiModel, conversation);
         sseAskParams.setLlmBuilderProperties(
                 LLMBuilderProperties.builder()
                         .temperature(conversation.getLlmTemperature())
+                        .returnThinking(returnThinking)
                         .build()
         );
-        //发起聊天
-        sseEmitterHelper.call(sseAskParams, true, (response, questionMeta, answerMeta) -> self.saveAfterAiResponse(user, askReq, response, questionMeta, answerMeta));
+        sseEmitterHelper.call(sseAskParams, (response, questionMeta, answerMeta) -> {
+
+            AudioInfo audioInfo = null;
+            if (StringUtils.isNotBlank(response.getAudioPath())) {
+
+                audioInfo = new AudioInfo();
+                MultimediaInfo multimediaInfo = LocalFileUtil.getAudioFileInfo(response.getAudioPath());
+                if (null != multimediaInfo) {
+                    audioInfo.setDuration((int) multimediaInfo.getDuration() / 1000);
+                }
+                audioInfo.setPath(response.getAudioPath());
+                //存储到数据库并返回真实的URL
+                AdiFile adiFile = fileService.saveFromPath(user, response.getAudioPath());
+                audioInfo.setUuid(adiFile.getUuid());
+                audioInfo.setUrl(FileOperatorContext.getFileUrl(adiFile));
+            }
+            boolean isRefEmbedding = false;
+            boolean isRefGraph = false;
+            for (ContentRetriever retriever : retrievers) {
+                if (retriever instanceof AdiEmbeddingStoreContentRetriever embeddingStoreContentRetriever) {
+                    isRefEmbedding = !embeddingStoreContentRetriever.getRetrievedEmbeddingToScore().isEmpty();
+                } else if (retriever instanceof GraphStoreContentRetriever graphStoreContentRetriever) {
+                    RefGraphDto graphDto = graphStoreContentRetriever.getGraphRef();
+                    isRefGraph = !graphDto.getVertices().isEmpty() || !graphDto.getEdges().isEmpty();
+                }
+            }
+            answerMeta.setIsRefEmbedding(isRefEmbedding);
+            answerMeta.setIsRefGraph(isRefGraph);
+            sseEmitterHelper.sendComplete(user.getId(), sseEmitter, questionMeta, answerMeta, audioInfo);
+            self.saveAfterAiResponse(user, askReq, retrievers, response, questionMeta, answerMeta, audioInfo);
+        });
+    }
+
+    /**
+     * 判断是否需要返回推理过程
+     * 以下两种场景表示需要返回推理过程
+     * 场景1：模型是推理模型 && 不允许关闭推理过程，
+     * 场景2：模型是推理模型 && 允许关闭推理过程 && 角色会话开启了推理过程
+     *
+     * @param aiModel      模型
+     * @param conversation 会话
+     * @return 是否需要返回推理过程
+     */
+    private boolean checkIfReturnThinking(AiModel aiModel, Conversation conversation) {
+        return Boolean.TRUE.equals(aiModel.getIsReasoner()) && (Boolean.FALSE.equals(aiModel.getIsThinkingClosable()) || Boolean.TRUE.equals(conversation.getIsEnableThinking()));
+    }
+
+    /**
+     * 多知识库搜索
+     *
+     * @param filteredKb 有效的已关联的知识库
+     * @param llmService 大模型服务
+     * @param askReq     请求参数
+     */
+    private Pair<List<ContentRetriever>, String> retrieveContents(List<KbInfoResp> filteredKb, AbstractLLMService<?> llmService, AskReq askReq) {
+        if (filteredKb.isEmpty()) {
+            log.warn("关联的知识库为空");
+            return Pair.of(Collections.emptyList(), "");
+        }
+        List<String> kbUuids = filteredKb.stream().map(KbInfoResp::getUuid).toList();
+        log.info("开始搜索相关联的知识库,kbUuids:{},question:{}", String.join(",", kbUuids), askReq.getPrompt());
+        ChatModel chatModel = llmService.buildChatLLM(
+                LLMBuilderProperties.builder()
+                        .temperature(LLM_TEMPERATURE_DEFAULT)
+                        .build());
+        //跨多个知识库查询
+        IsIn isIn = new IsIn(KB_UUID, kbUuids);
+        //忽略知识库自身的设置如最大召回数量maxResult，最小命中分数minScore，角色设置，是否强行中断搜索设置 等
+        List<ContentRetriever> retrievers = compositeRAG.createRetriever(chatModel, isIn, 3, RAG_RETRIEVE_MIN_SCORE_DEFAULT, false);
+        List<Content> retrieveContents = new ArrayList<>();
+        //TODO... 将搜索事件通过sse推到前端
+        //TODO... 并发执行ContentRetriever.retrieve以加快响应速度
+        retrievers.forEach(item -> retrieveContents.addAll(item.retrieve(Query.from(askReq.getPrompt()))));
+        if (!retrieveContents.isEmpty()) {
+            //如果命中了知识库内容，则将知识库内容添加到用户输入的prompt中
+            StringBuilder promptBuilder = new StringBuilder();
+            retrieveContents.forEach(content -> promptBuilder.append(content.textSegment().text()).append("\n"));
+            promptBuilder.append("\n");
+            return Pair.of(retrievers, promptBuilder.toString());
+        } else {
+            log.info("问题没有命中知识库中的文档");
+            return Pair.of(Collections.emptyList(), "");
+        }
     }
 
     public List<ConversationMessage> listQuestionsByConvId(long convId, long maxId, int pageSize) {
@@ -181,7 +306,7 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
     }
 
     @Transactional
-    public void saveAfterAiResponse(User user, AskReq askReq, String response, PromptMeta questionMeta, AnswerMeta answerMeta) {
+    public void saveAfterAiResponse(User user, AskReq askReq, List<ContentRetriever> retrievers, LLMResponseContent response, PromptMeta questionMeta, AnswerMeta answerMeta, AudioInfo audioInfo) {
         Conversation conversation;
         String prompt = askReq.getPrompt();
         String convUuid = askReq.getConversationUuid();
@@ -196,7 +321,7 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         if (StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid())) {
             promptMsg = getPromptMsgByQuestionUuid(askReq.getRegenerateQuestionUuid());
         } else {
-            //保存人提问的消息
+            //Save new question message
             ConversationMessage question = new ConversationMessage();
             question.setUserId(user.getId());
             question.setUuid(questionMeta.getUuid());
@@ -204,6 +329,7 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
             question.setConversationUuid(convUuid);
             question.setMessageRole(ChatMessageRoleEnum.USER.getValue());
             question.setRemark(prompt);
+            question.setProcessedRemark(askReq.getProcessedPrompt());
             question.setAiModelId(aiModel.getId());
             question.setAudioUuid(askReq.getAudioUuid());
             question.setAudioDuration(askReq.getAudioDuration());
@@ -212,44 +338,59 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
             question.setAttachments(String.join(",", askReq.getImageUrls()));
             baseMapper.insert(question);
 
+            createRef(retrievers, user, question.getId());
+
             promptMsg = this.lambdaQuery().eq(ConversationMessage::getUuid, questionMeta.getUuid()).one();
         }
 
-        //保存ai回复的消息
+        //save response message
         ConversationMessage aiAnswer = new ConversationMessage();
         aiAnswer.setUserId(user.getId());
         aiAnswer.setUuid(answerMeta.getUuid());
         aiAnswer.setConversationId(conversation.getId());
         aiAnswer.setConversationUuid(convUuid);
         aiAnswer.setMessageRole(ChatMessageRoleEnum.ASSISTANT.getValue());
-        aiAnswer.setRemark(response);
+        aiAnswer.setThinkingContent(Objects.toString(response.getThinkingContent(), ""));
+        aiAnswer.setRemark(response.getContent());
+        //TODO 过滤或转换AI返回的内容
+        //aiAnswer.setProcessedRemark("");
+        aiAnswer.setAudioUuid(null == audioInfo ? "" : Objects.toString(audioInfo.getUuid(), ""));
+        aiAnswer.setAudioDuration(null == audioInfo ? 0 : audioInfo.getDuration());
         aiAnswer.setTokens(answerMeta.getTokens());
         aiAnswer.setParentMessageId(promptMsg.getId());
         aiAnswer.setAiModelId(aiModel.getId());
+        aiAnswer.setIsRefEmbedding(answerMeta.getIsRefEmbedding());
+        aiAnswer.setIsRefGraph(answerMeta.getIsRefGraph());
+        int answerContentType = getAnswerContentType(conversation, askReq);
+        aiAnswer.setContentType(answerContentType);
         baseMapper.insert(aiAnswer);
-        //计算消耗的token
+
+        createRef(retrievers, user, aiAnswer.getId());
+
         calcTodayCost(user, conversation, questionMeta, answerMeta, aiModel.getIsFree());
 
-        //保存消息到记忆库里
+        //Save response to memory
         if (Boolean.TRUE.equals(conversation.getUnderstandContextEnable())) {
             MapDBChatMemoryStore mapDBChatMemoryStore = MapDBChatMemoryStore.getSingleton();
             List<ChatMessage> messages = mapDBChatMemoryStore.getMessages(askReq.getConversationUuid());
             List<ChatMessage> newMessages = new ArrayList<>(messages);
-            newMessages.add(AiMessage.aiMessage(response));
+            newMessages.add(AiMessage.aiMessage(response.getContent()));
             mapDBChatMemoryStore.updateMessages(askReq.getConversationUuid(), newMessages);
         }
+
+        //TODO... 如果关联了知识库，把命中的知识库片段存储起来
     }
 
     private void calcTodayCost(User user, Conversation conversation, PromptMeta questionMeta, AnswerMeta answerMeta, boolean isFreeToken) {
 
         int todayTokenCost = questionMeta.getTokens() + answerMeta.getTokens();
         try {
-            //计算对话消耗的token
+            //calculate conversation tokens
             conversationService.lambdaUpdate()
                     .eq(Conversation::getId, conversation.getId())
                     .set(Conversation::getTokens, conversation.getTokens() + todayTokenCost)
                     .update();
-            //计算用户消耗的token
+
             userDayCostService.appendCostToUser(user, todayTokenCost, isFreeToken);
         } catch (Exception e) {
             log.error("calcTodayCost error", e);
@@ -286,6 +427,64 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         return conversationMessage.getRemark();
     }
 
+    private void createRef(List<ContentRetriever> retrievers, User user, Long msgId) {
+        if (CollectionUtils.isEmpty(retrievers)) {
+            return;
+        }
+        for (ContentRetriever retriever : retrievers) {
+            if (retriever instanceof AdiEmbeddingStoreContentRetriever embeddingRetriever) {
+                self.createEmbeddingRefs(user, msgId, embeddingRetriever.getRetrievedEmbeddingToScore());
+            } else if (retriever instanceof GraphStoreContentRetriever graphRetriever) {
+                self.createGraphRefs(user, msgId, graphRetriever.getGraphRef());
+            }
+        }
+    }
+
+    /**
+     * 增加嵌入引用记录
+     *
+     * @param user             用户
+     * @param messageId        消息id
+     * @param embeddingToScore 嵌入向量id和分数的映射
+     */
+    public void createEmbeddingRefs(User user, Long messageId, Map<String, Double> embeddingToScore) {
+        log.info("创建向量引用,userId:{},qaRecordId:{},embeddingToScore.size:{}", user.getId(), messageId, embeddingToScore.size());
+        for (Map.Entry<String, Double> entry : embeddingToScore.entrySet()) {
+            String embeddingId = entry.getKey();
+            ConversationMessageRefEmbedding recordReference = new ConversationMessageRefEmbedding();
+            recordReference.setMessageId(messageId);
+            recordReference.setEmbeddingId(embeddingId);
+            recordReference.setScore(embeddingToScore.get(embeddingId));
+            recordReference.setUserId(user.getId());
+            conversationMessageRefEmbeddingService.save(recordReference);
+        }
+    }
+
+    /**
+     * 增加图谱引用记录
+     *
+     * @param user      用户
+     * @param messageId 消息id
+     * @param graphDto  图谱引用数据传输对象
+     */
+    public void createGraphRefs(User user, Long messageId, RefGraphDto graphDto) {
+        log.info("准备创建图谱引用,userId:{},qaRecordId:{},vertices.Size:{},edges.size:{}", user.getId(), messageId, graphDto.getVertices().size(), graphDto.getEdges().size());
+        if (graphDto.getVertices().isEmpty() && graphDto.getEdges().isEmpty()) {
+            log.warn("图谱引用数据为空，无法创建图谱引用记录,userId:{},qaRecordId:{}", user.getId(), messageId);
+            return;
+        }
+        String entities = null == graphDto.getEntitiesFromLlm() ? "" : String.join(",", graphDto.getEntitiesFromLlm());
+        Map<String, Object> graphFromStore = new HashMap<>();
+        graphFromStore.put("vertices", graphDto.getVertices());
+        graphFromStore.put("edges", graphDto.getEdges());
+        ConversationMessageRefGraph refGraph = new ConversationMessageRefGraph();
+        refGraph.setMessageId(messageId);
+        refGraph.setUserId(user.getId());
+        refGraph.setEntitiesFromQuestion(entities);
+        refGraph.setGraphFromStore(JsonUtil.toJson(graphFromStore));
+        conversationMessageRefGraphService.save(refGraph);
+    }
+
     private ChatModelParams buildChatModelParams(Conversation conversation, AskReq askReq) {
         ChatModelParams.ChatModelParamsBuilder builder = ChatModelParams.builder();
         if (StringUtils.isNotBlank(conversation.getAiSystemMessage())) {
@@ -295,9 +494,11 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         if (Boolean.TRUE.equals(conversation.getUnderstandContextEnable())) {
             builder.memoryId(askReq.getConversationUuid());
         }
-        String prompt = askReq.getPrompt();
+        //如果用户问题已处理过，例如增加了召回的文档文段，则使用该增强的问题，否则使用用户的原始问题
+        String prompt = StringUtils.isNotBlank(askReq.getProcessedPrompt()) ? askReq.getProcessedPrompt() : askReq.getPrompt();
         if (StringUtils.isNotBlank(askReq.getRegenerateQuestionUuid())) {
-            prompt = getPromptMsgByQuestionUuid(askReq.getRegenerateQuestionUuid()).getRemark();
+            ConversationMessage lastMsg = getPromptMsgByQuestionUuid(askReq.getRegenerateQuestionUuid());
+            prompt = StringUtils.isNotBlank(lastMsg.getProcessedRemark()) ? lastMsg.getProcessedRemark() : lastMsg.getRemark();
         }
         builder.userMessage(prompt);
         builder.imageUrls(askReq.getImageUrls());
@@ -309,6 +510,22 @@ public class ConversationMessageService extends ServiceImpl<ConversationMessageM
         }
         builder.mcpClients(mcpClients);
         return builder.build();
+    }
+
+    /**
+     * 获取响应内容类型
+     *
+     * @param conversation 对话
+     * @param askReq       请求参数
+     * @return 响应内容类型
+     */
+    private int getAnswerContentType(Conversation conversation, AskReq askReq) {
+        int answerContentType = conversation.getAnswerContentType();
+        //如果设置了响应内容类型为自动，并且用户输入是音频，则响应内容类型设置为音频
+        if (answerContentType == AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUTO && StringUtils.isNotBlank(askReq.getAudioUuid())) {
+            answerContentType = AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUDIO;
+        }
+        return answerContentType;
     }
 
 }

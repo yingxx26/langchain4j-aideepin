@@ -1,5 +1,7 @@
 package com.moyz.adi.common.service.languagemodel;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.moyz.adi.common.cosntant.AdiConstant;
 import com.moyz.adi.common.entity.AiModel;
 import com.moyz.adi.common.enums.ErrorEnum;
@@ -23,10 +25,12 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.PartialThinking;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.service.tool.ToolProvider;
 import dev.langchain4j.service.tool.ToolService;
 import dev.langchain4j.service.tool.ToolServiceContext;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -36,6 +40,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import static com.moyz.adi.common.cosntant.AdiConstant.LLM_MAX_INPUT_TOKENS_DEFAULT;
 import static com.moyz.adi.common.enums.ErrorEnum.A_PARAMS_ERROR;
@@ -46,11 +51,11 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
 
     protected StringRedisTemplate stringRedisTemplate;
 
-    //TTS相关部分参数
-    private String ttsJobId;
-    private TtsModelContext ttsModelContext;
-    private String ttsJobFilePath;
-    private TtsSetting ttsSetting;
+    //User#uuid => ttsJobInfo
+    private final Cache<String, TtsJobInfo> ttsJobCache;
+
+    @Getter
+    private final TtsSetting ttsSetting;
 
     protected AbstractLLMService(AiModel aiModel, String settingName, Class<T> clazz) {
         super(aiModel, settingName, clazz);
@@ -61,6 +66,8 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
             log.error("TTS配置未找到，请检查配置文件，请检查 adi_sys_config 中是否有 tts_setting 配置项");
             throw new BaseException(ErrorEnum.B_TTS_SETTING_NOT_FOUND);
         }
+
+        ttsJobCache = CacheBuilder.newBuilder().expireAfterWrite(10, TimeUnit.MINUTES).build();
     }
 
     private void initMaxInputTokens() {
@@ -92,7 +99,7 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
         return true;
     }
 
-    public ChatModel buildChatLLM(LLMBuilderProperties properties, String uuid) {
+    public ChatModel buildChatLLM(LLMBuilderProperties properties) {
         LLMBuilderProperties tmpProperties = properties;
         if (null == properties) {
             tmpProperties = new LLMBuilderProperties();
@@ -114,7 +121,7 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
 
     public abstract TokenCountEstimator getTokenEstimator();
 
-    /**  todo  yingxx
+    /**
      * 普通聊天，将原始的用户问题及历史消息发送给AI
      *
      * @param params   请求参数
@@ -131,14 +138,13 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
         }
         ChatModelParams chatModelParams = params.getChatModelParams();
         log.info("sseChat,messageId:{}", chatModelParams.getMemoryId());
-         // 组装消息
         List<ChatMessage> chatMessages = createChatMessages(chatModelParams);
-        // 设置模型参数
         StreamingChatModel streamingChatModel = buildStreamingChatModel(params.getLlmBuilderProperties());
-        // 设置工具参数
-        ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages);
+
+        ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages, params.getLlmBuilderProperties().getReturnThinking());
         InnerStreamChatParams innerStreamChatParams = InnerStreamChatParams.builder()
                 .uuid(params.getUuid())
+                .user(params.getUser())
                 .streamingChatModel(streamingChatModel)
                 .chatRequest(chatRequest)
                 .sseEmitter(params.getSseEmitter())
@@ -148,33 +154,27 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
                 .build();
         try {
 
-            //如果系统设置的语音合成器类型是后端合成，并且设置的返回内容是音频，则初始化tts任务并注册回调函数
-            if (AdiConstant.TtsConstant.SYNTHESIZER_SERVER.equals(ttsSetting.getSynthesizerSide()) && params.getAnswerContentType() == AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUDIO) {
-                ttsJobId = UuidUtil.createShort();
-                ttsModelContext = new TtsModelContext();
+            //如果系统设置的语音合成器类型是后端合成，并且当前聊天设置的返回内容是音频，则初始化tts任务并注册回调函数
+            if (TtsUtil.needTts(ttsSetting, params.getAnswerContentType())) {
+                String ttsJobId = UuidUtil.createShort();
+                TtsJobInfo jobInfo = new TtsJobInfo();
+                TtsModelContext ttsModelContext = new TtsModelContext();
+                jobInfo.setJobId(ttsJobId);
+                jobInfo.setTtsModelContext(ttsModelContext);
+                ttsJobCache.put(params.getUser().getUuid(), jobInfo);
                 ttsModelContext.startTtsJob(ttsJobId, "", (ByteBuffer audioFrame) -> {
                     byte[] frameBytes = new byte[audioFrame.remaining()];
                     audioFrame.get(frameBytes);
                     String base64Audio = Base64.getEncoder().encodeToString(frameBytes);
                     SSEEmitterHelper.sendAudio(params.getSseEmitter(), base64Audio);
-                }, (String filePathOrOssUrl) -> {
-                    ttsJobFilePath = filePathOrOssUrl;
-                }, (String errorMsg) -> {
-                    log.error("tts error: {}", errorMsg);
-                });
+                }, jobInfo::setFilePath, (String errorMsg) -> log.error("tts error: {}", errorMsg));
             }
 
             //不管是不是需要返回音频文件，都需要innerStreamingChat()
             innerStreamingChat(innerStreamChatParams);
         } catch (Exception e) {
-            //Close MCP clients
-            params.getChatModelParams().getMcpClients().forEach(item -> {
-                try {
-                    item.close();
-                } catch (Exception e1) {
-                    throw new RuntimeException(e1);
-                }
-            });
+            ttsJobCache.invalidate(params.getUser().getUuid());
+            closeMcpClients(params.getChatModelParams().getMcpClients());
             throw e;
         }
 
@@ -191,10 +191,12 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
             @Override
             public void onPartialResponse(String partialResponse) {
                 SSEEmitterHelper.parseAndSendPartialMsg(params.getSseEmitter(), partialResponse);
+                ttsOnPartialMessage(params, partialResponse);
+            }
 
-                if (null != ttsModelContext && AdiConstant.TtsConstant.SYNTHESIZER_SERVER.equals(ttsSetting.getSynthesizerSide()) && params.getAnswerContentType() == AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUDIO) {
-                    ttsModelContext.processPartialText(ttsJobId, partialResponse);
-                }
+            @Override
+            public void onPartialThinking(PartialThinking partialThinking) {
+                SSEEmitterHelper.sendThinking(params.getSseEmitter(), partialThinking.text());
             }
 
             @Override
@@ -216,36 +218,19 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
                     // recursive call now with tool calling results
                     innerStreamingChat(params);
                 } else {
-                    //结束TTS任务
-                    if (null != ttsModelContext) {
-                        //TODO。。。 停止转换任务，此时有可能导致只合成部分音频，待处理
-                        ttsModelContext.complete(ttsJobId);
-                    }
+                    TtsJobInfo jobInfo = ttsOnComplete(params);
+                    String filePath = null != jobInfo ? jobInfo.getFilePath() : null;
                     //结束整个对话任务
                     Pair<PromptMeta, AnswerMeta> pair = SSEEmitterHelper.calculateToken(response, params.getUuid());
-                    params.getConsumer().accept(new LLMResponseContent(response.aiMessage().text(), ttsJobFilePath), pair.getLeft(), pair.getRight());
-                    //Close mcp clients
-                    params.getMcpClients().forEach(item -> {
-                        try {
-                            item.close();
-                        } catch (Exception e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
+                    params.getConsumer().accept(new LLMResponseContent(response.aiMessage().thinking(), response.aiMessage().text(), filePath), pair.getLeft(), pair.getRight());
+                    closeMcpClients(params.getMcpClients());
                 }
             }
 
             @Override
             public void onError(Throwable error) {
                 SSEEmitterHelper.errorAndShutdown(error, params.getSseEmitter());
-                //Close MCP clients
-                params.getMcpClients().forEach(item -> {
-                    try {
-                        item.close();
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                });
+                closeMcpClients(params.getMcpClients());
             }
         });
     }
@@ -261,9 +246,9 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
         }
 
         ChatModelParams chatModelParams = params.getChatModelParams();
-        ChatModel chatModel = buildChatLLM(params.getLlmBuilderProperties(), params.getUuid());
+        ChatModel chatModel = buildChatLLM(params.getLlmBuilderProperties());
         List<ChatMessage> chatMessages = createChatMessages(chatModelParams);
-        ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages);
+        ChatRequest chatRequest = createChatRequest(chatModelParams.getMcpClients(), chatMessages, params.getLlmBuilderProperties().getReturnThinking());
 
         ChatResponse chatResponse = chatModel.chat(chatRequest);
         if (chatResponse.aiMessage().hasToolExecutionRequests()) {
@@ -307,13 +292,7 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
             cacheTokenUsage(uuid, chatResponse);
             return chatResponse;
         } finally {
-            chatModelParams.getMcpClients().forEach(item -> {
-                try {
-                    item.close();
-                } catch (Exception e1) {
-                    throw new RuntimeException(e1);
-                }
-            });
+            closeMcpClients(chatModelParams.getMcpClients());
         }
     }
 
@@ -410,7 +389,7 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
         return tools;
     }
 
-    private ChatRequest createChatRequest(List<McpClient> mcpClients, List<ChatMessage> chatMessages) {
+    private ChatRequest createChatRequest(List<McpClient> mcpClients, List<ChatMessage> chatMessages, Boolean returnThinking) {
         ToolProvider toolProvider = McpToolProvider.builder()
                 .mcpClients(mcpClients)
                 .build();
@@ -419,9 +398,10 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
 
         ToolServiceContext toolServiceContext = toolService.createContext(UuidUtil.createShort(), ((UserMessage) chatMessages.get(chatMessages.size() - 1)));
         log.info("tool specs:{}", toolServiceContext.toolSpecifications());
-        ChatRequestParameters parameters = ChatRequestParameters.builder()
+        ChatRequestParameters defaultParameters = ChatRequestParameters.builder()
                 .toolSpecifications(toolServiceContext.toolSpecifications())
                 .build();
+        ChatRequestParameters parameters = doCreateChatRequestParameters(defaultParameters, returnThinking);
 
         return ChatRequest.builder()
                 .messages(chatMessages)
@@ -429,27 +409,15 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
                 .build();
     }
 
+    protected ChatRequestParameters doCreateChatRequestParameters(ChatRequestParameters defaultParameters, Boolean returnThinking) {
+        return defaultParameters;
+    }
+
     private List<ToolExecutionResultMessage> createToolExecutionMessages(AiMessage aiMessage, Map<ToolSpecification, McpClient> toolSpecificationMcpClientMap) {
         List<ToolExecutionResultMessage> toolExecutionMessages = new ArrayList<>();
         aiMessage.toolExecutionRequests().forEach(req -> {
             log.warn("tool exec request:{},", req);
-            //部分模型（如硅基流动）返回的工具请求可能没有id和name，需要手动解析，如 ToolExecutionRequest { id = "", name = "", arguments = "maps_weather
-            //{"city": "广州"}" }
-            if (StringUtils.isBlank(req.id())) {
-                String arguments = req.arguments();
-                String name = req.name();
-                if (StringUtils.isBlank(name) && StringUtils.isNotBlank(arguments) && !arguments.startsWith("{")) {
-                    // 如果arguments是json格式，则使用工具名称作为id
-                    String[] args = arguments.split(" ");
-                    if (args.length > 1) {
-                        name = args[0];
-                        arguments = arguments.substring(name.length()).trim();
-                    } else {
-                        name = "name_" + UuidUtil.createShort();
-                    }
-                }
-                req = ToolExecutionRequest.builder().id("id_" + UuidUtil.createShort()).name(name).arguments(arguments).build();
-            }
+            req = parseToolRequest(req);
             McpClient selectedMcpClient = null;
             for (Map.Entry<ToolSpecification, McpClient> entry : toolSpecificationMcpClientMap.entrySet()) {
                 if (entry.getKey().name().equals(req.name())) {
@@ -471,5 +439,64 @@ public abstract class AbstractLLMService<T> extends CommonModelService<T> {
             }
         });
         return toolExecutionMessages;
+    }
+
+    /**
+     * 将收到的内容转换成音频
+     * 条件：系统设置了tts为服务端转换 && 答案类型为音频
+     *
+     * @param params          内部迭代方法入参
+     * @param partialResponse 文本内容
+     */
+    private void ttsOnPartialMessage(InnerStreamChatParams params, String partialResponse) {
+        TtsJobInfo jobInfo = ttsJobCache.getIfPresent(params.getUser().getUuid());
+        if (null != jobInfo && null != jobInfo.getTtsModelContext() && AdiConstant.TtsConstant.SYNTHESIZER_SERVER.equals(ttsSetting.getSynthesizerSide()) && params.getAnswerContentType() == AdiConstant.ConversationConstant.ANSWER_CONTENT_TYPE_AUDIO) {
+            jobInfo.getTtsModelContext().processPartialText(jobInfo.getJobId(), partialResponse);
+        }
+    }
+
+    private TtsJobInfo ttsOnComplete(InnerStreamChatParams params) {
+        TtsJobInfo jobInfo = ttsJobCache.getIfPresent(params.getUser().getUuid());
+        if (null != jobInfo && null != jobInfo.getTtsModelContext()) {
+            //TODO。。。 停止转换任务，此时有可能导致只合成部分音频，待处理
+            jobInfo.getTtsModelContext().complete(jobInfo.getJobId());
+        }
+        //Remove job info
+        ttsJobCache.invalidate(params.getUser().getUuid());
+        return jobInfo;
+    }
+
+    private void closeMcpClients(List<McpClient> mcpClients) {
+        mcpClients.forEach(item -> {
+            try {
+                item.close();
+            } catch (Exception e) {
+                log.error("close mcp client error", e);
+            }
+        });
+    }
+
+    /**
+     * 如果工具请求参数中没有包含id，则手动解析该参数以补充 id 和 name
+     * 部分模型（如硅基流动）返回的工具请求可能没有id和name，需要手动解析，如 ToolExecutionRequest { id = "", name = "", arguments = "maps_weather {"city": "广州"}" }
+     *
+     * @param req 工具请求参数
+     */
+    private ToolExecutionRequest parseToolRequest(ToolExecutionRequest req) {
+        if (StringUtils.isBlank(req.id())) {
+            String arguments = req.arguments();
+            String name = req.name();
+            if (StringUtils.isBlank(name) && StringUtils.isNotBlank(arguments) && !arguments.startsWith("{")) {
+                String[] args = arguments.split(" ");
+                if (args.length > 0) {
+                    name = args[0];
+                    arguments = arguments.substring(name.length()).trim();
+                } else {
+                    name = "name_" + UuidUtil.createShort();
+                }
+            }
+            return ToolExecutionRequest.builder().id("id_" + UuidUtil.createShort()).name(name).arguments(arguments).build();
+        }
+        return req;
     }
 }

@@ -1,7 +1,7 @@
 package com.moyz.adi.common.rag;
 
 import com.moyz.adi.common.cosntant.AdiConstant;
-import com.moyz.adi.common.dto.KbQaRefGraphDto;
+import com.moyz.adi.common.dto.RefGraphDto;
 import com.moyz.adi.common.exception.BaseException;
 import com.moyz.adi.common.util.AdiStringUtil;
 import com.moyz.adi.common.vo.*;
@@ -17,6 +17,7 @@ import org.apache.commons.lang3.tuple.Triple;
 
 import java.util.*;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static com.moyz.adi.common.enums.ErrorEnum.B_BREAK_SEARCH;
 import static dev.langchain4j.internal.Utils.getOrDefault;
@@ -33,7 +34,7 @@ public class GraphStoreContentRetriever implements ContentRetriever {
     public static final String DEFAULT_DISPLAY_NAME = "Default";
 
     private final GraphStore graphStore;
-    private final ChatModel ChatModel;
+    private final ChatModel chatModel;
 
     private final Function<Query, Integer> maxResultsProvider;
     private final Function<Query, Filter> filterProvider;
@@ -42,18 +43,18 @@ public class GraphStoreContentRetriever implements ContentRetriever {
 
     private final boolean breakIfSearchMissed;
 
-    private final KbQaRefGraphDto kbQaRecordRefGraphDto = KbQaRefGraphDto.builder().vertices(Collections.emptyList()).edges(Collections.emptyList()).entitiesFromLlm(Collections.emptyList()).build();
+    private final RefGraphDto kbQaRecordRefGraphDto = RefGraphDto.builder().vertices(Collections.emptyList()).edges(Collections.emptyList()).entitiesFromLlm(Collections.emptyList()).build();
 
     @Builder
     private GraphStoreContentRetriever(String displayName,
                                        GraphStore graphStore,
-                                       ChatModel ChatModel,
+                                       ChatModel chatModel,
                                        Function<Query, Integer> dynamicMaxResults,
                                        Function<Query, Filter> dynamicFilter,
                                        Boolean breakIfSearchMissed) {
         this.displayName = getOrDefault(displayName, DEFAULT_DISPLAY_NAME);
         this.graphStore = ensureNotNull(graphStore, "graphStore");
-        this.ChatModel = ensureNotNull(ChatModel, "ChatModel");
+        this.chatModel = ensureNotNull(chatModel, "ChatModel");
         this.maxResultsProvider = getOrDefault(dynamicMaxResults, DEFAULT_MAX_RESULTS);
         this.filterProvider = getOrDefault(dynamicFilter, DEFAULT_FILTER);
         this.breakIfSearchMissed = breakIfSearchMissed;
@@ -68,7 +69,7 @@ public class GraphStoreContentRetriever implements ContentRetriever {
         log.info("Graph retrieve,query:{}", query);
         String response = "";
         try {
-            response = ChatModel.chat(GraphExtractPrompt.GRAPH_EXTRACTION_PROMPT_CN.replace("{input_text}", query.text()));
+            response = chatModel.chat(GraphExtractPrompt.GRAPH_EXTRACTION_PROMPT_CN.replace("{input_text}", query.text()));
         } catch (Exception e) {
             log.error("Graph retrieve. extract graph error", e);
         }
@@ -93,14 +94,16 @@ public class GraphStoreContentRetriever implements ContentRetriever {
         if (breakIfSearchMissed && entities.isEmpty()) {
             throw new BaseException(B_BREAK_SEARCH);
         }
+        entities = entities.stream().map(AdiStringUtil::removeSpecialChar).filter(StringUtils::isNotBlank).collect(Collectors.toSet());
         if (entities.isEmpty()) {
             log.info("从用户查询中没有解析出实体");
             return Collections.emptyList();
         }
 
+        List<String> entityNames = entities.stream().toList();
         List<GraphVertex> vertices = graphStore.searchVertices(
                 GraphVertexSearch.builder()
-                        .names(entities.stream().toList())
+                        .names(entityNames)
                         .metadataFilter(filterProvider.apply(query))
                         .limit(maxResultsProvider.apply(query))
                         .build()
@@ -120,7 +123,7 @@ public class GraphStoreContentRetriever implements ContentRetriever {
             allEdges.add(triple.getMiddle());
         }
         allVertices.putAll(vertices.stream().collect(toMap(GraphVertex::getId, Function.identity())));
-        kbQaRecordRefGraphDto.setEntitiesFromLlm(entities.stream().toList());
+        kbQaRecordRefGraphDto.setEntitiesFromLlm(entityNames);
         kbQaRecordRefGraphDto.setVertices(allVertices.values().stream().toList());
         kbQaRecordRefGraphDto.setEdges(allEdges);
 
@@ -130,7 +133,7 @@ public class GraphStoreContentRetriever implements ContentRetriever {
         return vertexContents;
     }
 
-    public KbQaRefGraphDto getGraphRef() {
+    public RefGraphDto getGraphRef() {
         return kbQaRecordRefGraphDto;
     }
 

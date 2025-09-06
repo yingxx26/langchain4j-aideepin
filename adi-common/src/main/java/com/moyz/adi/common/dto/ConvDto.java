@@ -26,9 +26,11 @@ public class ConvDto {
     private Boolean understandContextEnable;
 
     private List<Long> mcpIds;
+    private List<Long> kbIds;
+    private List<ConvKnowledge> convKnowledgeList;
     private Integer answerContentType;
     private Boolean isAutoplayAnswer;
-
+    private Boolean isEnableThinking;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

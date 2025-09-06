@@ -22,6 +22,9 @@ public class ConvMsgDto {
     @Schema(title = "对话的消息")
     private String remark;
 
+    @Schema(title = "思考的内容")
+    private String thinkingContent;
+
     @Schema(title = "音频文件uuid")
     private String audioUuid;
 
@@ -54,4 +57,10 @@ public class ConvMsgDto {
 
     @Schema(title = "内容格式，2：文本；3：音频")
     private Integer contentType;
+
+    @Schema(title = "是否引用了向量库知识")
+    private Boolean isRefEmbedding;
+
+    @Schema(title = "是否引用了图谱库知识")
+    private Boolean isRefGraph;
 }

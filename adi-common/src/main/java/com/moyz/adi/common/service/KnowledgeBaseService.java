@@ -26,6 +26,7 @@ import com.moyz.adi.common.vo.UpdateQaParams;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.store.embedding.filter.comparison.IsEqualTo;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
@@ -47,6 +48,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 
+import static com.moyz.adi.common.cosntant.AdiConstant.SSE_TIMEOUT;
 import static com.moyz.adi.common.cosntant.AdiConstant.SysConfigKey.QUOTA_BY_QA_ASK_DAILY;
 import static com.moyz.adi.common.cosntant.RedisKeyConstant.KB_STATISTIC_RECALCULATE_SIGNAL;
 import static com.moyz.adi.common.cosntant.RedisKeyConstant.USER_INDEXING;
@@ -285,6 +287,14 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
         return MPPageUtil.convertToPage(knowledgeBasePage, result, KbInfoResp.class, null);
     }
 
+    public List<KbInfoResp> listByIds(List<Long> ids) {
+        if (CollectionUtils.isEmpty(ids)) {
+            return Collections.emptyList();
+        }
+        List<KnowledgeBase> knowledgeBases = baseMapper.selectByIds(ids);
+        return MPPageUtil.convertToList(knowledgeBases, KbInfoResp.class);
+    }
+
     public boolean softDelete(String uuid) {
         checkPrivilege(null, uuid);
         return ChainWrappers.lambdaUpdateChain(baseMapper)
@@ -295,7 +305,7 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
 
     public SseEmitter sseAsk(String qaRecordUuid) {
         checkRequestTimesOrThrow();
-        SseEmitter sseEmitter = new SseEmitter();
+        SseEmitter sseEmitter = new SseEmitter(SSE_TIMEOUT);
         User user = ThreadContext.getCurrentUser();
         if (!sseEmitterHelper.checkOrComplete(user, sseEmitter)) {
             return sseEmitter;
@@ -373,7 +383,6 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
 
         TokenEstimatorThreadLocal.setTokenEstimator(knowledgeBase.getIngestTokenEstimator());
 
-        Map<String, String> metadataCond = Map.of(AdiConstant.MetadataKey.KB_UUID, qaRecord.getKbUuid());
         int maxInputTokens = aiModel.getMaxInputTokens();
         int maxResults = knowledgeBase.getRetrieveMaxResults();
         //maxResults < 1 表示由系统根据设置的模型maxInputTokens自动计算大小
@@ -421,15 +430,11 @@ public class KnowledgeBaseService extends ServiceImpl<KnowledgeBaseMapper, Knowl
             }
         } else {
             log.info("进行RAG请求,maxResults:{}", maxResults);
-            //构建聊天模型
-            ChatModel ChatModel = LLMContext.getLLMServiceById(knowledgeBase.getIngestModelId()).buildChatLLM(
+            ChatModel chatModel = LLMContext.getLLMServiceById(knowledgeBase.getIngestModelId()).buildChatLLM(
                     LLMBuilderProperties.builder()
                             .temperature(knowledgeBase.getQueryLlmTemperature())
-                            .build()
-                    , qaRecordUuid);
-            //构建知识库检索器
-            List<ContentRetriever> retrievers = compositeRAG.createRetriever(ChatModel, metadataCond, maxResults, knowledgeBase.getRetrieveMinScore(), knowledgeBase.getIsStrict());
-            //发起提问
+                            .build());
+            List<ContentRetriever> retrievers = compositeRAG.createRetriever(chatModel, new IsEqualTo(AdiConstant.MetadataKey.KB_UUID, qaRecord.getKbUuid()), maxResults, knowledgeBase.getRetrieveMinScore(), knowledgeBase.getIsStrict());
             compositeRAG.ragChat(retrievers, sseAskParams, (response, promptMeta, answerMeta) -> {
                         sseEmitterHelper.sendComplete(user.getId(), sseAskParams.getSseEmitter());
                         updateQaRecord(

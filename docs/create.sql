@@ -113,24 +113,25 @@ EXECUTE PROCEDURE update_modified_column();
 
 CREATE TABLE adi_ai_model
 (
-    id                bigserial primary key,
-    name              varchar(45)   default ''                not null,
-    title             varchar(45)   default ''                not null,
-    type              varchar(45)   default 'text'            not null,
-    setting           varchar(500)  default ''                not null,
-    remark            varchar(1000) default '',
-    platform          varchar(45)   default ''                not null,
-    context_window    int           default 0                 not null,
-    max_input_tokens  int           default 0                 not null,
-    max_output_tokens int           default 0                 not null,
-    input_types       varchar(100)  default 'text'            not null,
-    properties        jsonb         default '{}'              not null,
-    is_reasoner       boolean       default false             not null,
-    is_free           boolean       default false             not null,
-    is_enable         boolean       default false             not null,
-    create_time       timestamp     default CURRENT_TIMESTAMP not null,
-    update_time       timestamp     default CURRENT_TIMESTAMP not null,
-    is_deleted        boolean       default false             not null
+    id                   bigserial primary key,
+    name                 varchar(45)   default ''                not null,
+    title                varchar(45)   default ''                not null,
+    type                 varchar(45)   default 'text'            not null,
+    setting              varchar(500)  default ''                not null,
+    remark               varchar(1000) default '',
+    platform             varchar(45)   default ''                not null,
+    context_window       int           default 0                 not null,
+    max_input_tokens     int           default 0                 not null,
+    max_output_tokens    int           default 0                 not null,
+    input_types          varchar(100)  default 'text'            not null,
+    properties           jsonb         default '{}'              not null,
+    is_reasoner          boolean       default false             not null,
+    is_thinking_closable boolean       default false             not null,
+    is_free              boolean       default false             not null,
+    is_enable            boolean       default false             not null,
+    create_time          timestamp     default CURRENT_TIMESTAMP not null,
+    update_time          timestamp     default CURRENT_TIMESTAMP not null,
+    is_deleted           boolean       default false             not null
 );
 
 COMMENT ON TABLE adi_ai_model IS 'AI模型 | AI model';
@@ -142,6 +143,7 @@ COMMENT ON COLUMN adi_ai_model.platform IS '平台 | Platform, e.g., openai, das
 COMMENT ON COLUMN adi_ai_model.context_window IS '上下文窗口 | LLM context window';
 COMMENT ON COLUMN adi_ai_model.input_types IS '输入类型 | Input types, e.g., text, image, audio, video';
 COMMENT ON COLUMN adi_ai_model.is_reasoner IS 'true: 推理模型如deepseek-r1, false: 非推理模型如deepseek-v3 | true: Reasoning model, false: Non-reasoning model';
+COMMENT ON COLUMN adi_ai_model.is_thinking_closable IS '思考过程是否可以关闭，Qwen3可以开启或关闭思考过程，而deepseek-r1无法关闭 | Whether the thinking process can be closed, Qwen3 can enable or disable the thinking process, while deepseek-r1 cannot disable it';
 COMMENT ON COLUMN adi_ai_model.is_enable IS '是否启用 | True: Normal usage, false: Not available';
 COMMENT ON COLUMN adi_ai_model.is_free IS '是否免费 | Is free, true: free, false: paid';
 COMMENT ON COLUMN adi_ai_model.create_time IS '创建时间 | Timestamp of record creation';
@@ -187,8 +189,10 @@ CREATE TABLE adi_conversation
     understand_context_enable boolean       default false             not null,
     llm_temperature           numeric(2, 1) default 0.7               not null,
     mcp_ids                   varchar(1000) default ''                not null,
+    kb_ids                    varchar(1000) default ''                not null,
     answer_content_type       smallint      default 1                 not null,
     is_autoplay_answer        boolean       default true              not null,
+    is_enable_thinking        boolean       default false             not null,
     create_time               timestamp     default CURRENT_TIMESTAMP not null,
     update_time               timestamp     default CURRENT_TIMESTAMP not null,
     is_deleted                boolean       default false             not null
@@ -201,8 +205,10 @@ COMMENT ON COLUMN adi_conversation.remark IS '备注，如：断案如神，手�
 COMMENT ON COLUMN adi_conversation.ai_system_message IS '角色设定内容，如：你是唐朝的狄仁杰，破了很多大案、疑案 | Role setting content, e.g., You are Sherlock Holmes, a brilliant detective known for your keen observation skills';
 COMMENT ON COLUMN adi_conversation.llm_temperature IS 'LLM响应的创造性/随机性 | LLM response creativity/randomness';
 COMMENT ON COLUMN adi_conversation.mcp_ids IS '启用的MCP服务id,以逗号隔开 | Enabled MCP service IDs, comma-separated';
+COMMENT ON COLUMN adi_conversation.kb_ids IS '关联使用的知识库id列表,以逗号隔开 | Associated knowledge base IDs, comma-separated';
 COMMENT ON COLUMN adi_conversation.answer_content_type IS '设置响应内容类型：1：自动（跟随用户的输入类型，如果用户输入是音频，则响应内容也同样是音频，如果用户输入是文本，则响应内容显示文本），2：文本，3：音频 | Response content display type: 1: Auto (if user input is audio, response content is also audio; if user input is text, response content displays text), 2: Text, 3: Audio';
 COMMENT ON COLUMN adi_conversation.is_autoplay_answer IS '设置聊天时音频类型的响应内容是否自动播放，true: 自动播放，false: 不自动播放 | Whether audio-type response content automatically plays, true: Auto play, false: Do not auto play';
+COMMENT ON COLUMN adi_conversation.is_enable_thinking IS '当前使用的模型如果是推理模式并且支持对思考过程的开关，则本字段生效 | Whether the current model supports reasoning mode and thinking process toggle, if so, this field takes effect';
 
 CREATE TRIGGER trigger_conv_update_time
     BEFORE UPDATE
@@ -241,7 +247,9 @@ CREATE TABLE adi_conversation_message
     conversation_id                 bigint        default 0                 not null,
     conversation_uuid               varchar(32)   default ''                not null,
     content_type                    smallint      default 2                 not null,
-    remark                          text,
+    remark                          text          default ''                not null,
+    processed_remark                text          default ''                not null,
+    thinking_content                text          default ''                not null,
     audio_uuid                      varchar(32)   default ''                not null,
     audio_duration                  integer       default 0                 not null,
     uuid                            varchar(32)   default ''                not null,
@@ -253,6 +261,8 @@ CREATE TABLE adi_conversation_message
     attachments                     varchar(1000) default ''                not null,
     create_time                     timestamp     default CURRENT_TIMESTAMP not null,
     update_time                     timestamp     default CURRENT_TIMESTAMP not null,
+    is_ref_embedding                boolean       default false             not null,
+    is_ref_graph                    boolean       default false             not null,
     is_deleted                      boolean       default false             not null
 );
 
@@ -260,7 +270,8 @@ COMMENT ON TABLE adi_conversation_message IS '对话消息表 | Conversation mes
 COMMENT ON COLUMN adi_conversation_message.parent_message_id IS '父级消息id | Parent message ID';
 COMMENT ON COLUMN adi_conversation_message.conversation_id IS '对话id | Conversation ID';
 COMMENT ON COLUMN adi_conversation_message.conversation_uuid IS '对话的UUID | Conversation UUID';
-COMMENT ON COLUMN adi_conversation_message.remark IS '消息内容 | message';
+COMMENT ON COLUMN adi_conversation_message.remark IS '原始的对话消息，如用户输入的问题，AI产生的回答';
+COMMENT ON COLUMN adi_conversation_message.processed_remark IS '处理过的有效的对话消息，如 1.提供给LLM的内容：用户输入的问题+关联的知识库；2.显示在用户面前的答案：AI产生的回答经过合规校验及过滤、个性化调整后的内容';
 COMMENT ON COLUMN adi_conversation_message.content_type IS '消息内容类型（跟conversation.answer_content_type对应），2：文本，3：音频 | Message content type, 2: Text, 3: Audio';
 COMMENT ON COLUMN adi_conversation_message.uuid IS '唯一标识消息的UUID | Unique identifier for the message';
 COMMENT ON COLUMN adi_conversation_message.audio_uuid IS '语音聊天时产生的音频文件uuid(对应adi_file.uuid) | UUID of the audio file generated during voice chat (corresponds to adi_file.uuid)';
@@ -271,12 +282,44 @@ COMMENT ON COLUMN adi_conversation_message.user_id IS '用户ID | User ID';
 COMMENT ON COLUMN adi_conversation_message.ai_model_id IS '模型表的ID | adi_ai_model id';
 COMMENT ON COLUMN adi_conversation_message.understand_context_msg_pair_num IS '上下文消息对数量 | Number of context message pairs';
 COMMENT ON COLUMN adi_conversation_message.attachments IS '附件,存储格式: uuid,uuid | Attachments, stored as: uuid,uuid';
+COMMENT ON COLUMN adi_conversation_message.is_ref_embedding IS '是否引用了向量库知识 | Whether embedding knowledge is referenced';
+COMMENT ON COLUMN adi_conversation_message.is_ref_graph IS '是否引用了图库知识 | Whether graph knowledge is referenced';
 
 CREATE TRIGGER trigger_conv_message_update_time
     BEFORE UPDATE
     ON adi_conversation_message
     FOR EACH ROW
 EXECUTE PROCEDURE update_modified_column();
+
+create table adi_conversation_message_ref_embedding
+(
+    id           bigserial primary key,
+    message_id   bigint        default 0  not null,
+    embedding_id varchar(36)   default '' not null,
+    score        numeric(3, 2) default 0  not null,
+    user_id      bigint        default 0  not null
+);
+
+comment on table adi_conversation_message_ref_embedding is '会话消息-知识库的向量引用 | Conversation-Question Record-Knowledge Base Embedding Reference List';
+comment on column adi_conversation_message_ref_embedding.message_id is '消息id | adi_conversation_message ID';
+comment on column adi_conversation_message_ref_embedding.embedding_id is '根据消息从向量库中获取到的向量uuid | adi_knowledge_base_embedding UUID';
+comment on column adi_conversation_message_ref_embedding.score is '评分 | Score';
+comment on column adi_conversation_message_ref_embedding.user_id is '所属用户 | User ID';
+
+create table adi_conversation_message_ref_graph
+(
+    id                     bigserial primary key,
+    message_id             bigint default 0  not null,
+    entities_from_question text   default '' not null,
+    graph_from_store       text   default '' not null,
+    user_id                bigint default 0  not null
+);
+
+comment on table adi_conversation_message_ref_graph is '会话消息-知识库的图谱引用记录 | Knowledge Base - Question Records - Graph References';
+comment on column adi_conversation_message_ref_graph.message_id is '消息id | adi_conversation_message ID';
+comment on column adi_conversation_message_ref_graph.entities_from_question is '从问题中解析出来的实体: vertexName1,vertexName2 | Graph parsed by LLM: vertexName1,vertexName2';
+comment on column adi_conversation_message_ref_graph.graph_from_store is '根据消息从图数据库中查找到的图谱: {vertices:[{id:"111",name:"vertexName1"},{id:"222",name:"vertexName2"}],edges:[{id:"333",name:"edgeName1",start:"111",end:"222"}] | Graph retrieved from graph database: {vertices:[{id:"111",name:"vertexName1"},{id:"222",name:"vertexName2"}],edges:[{id:"333",name:"edgeName1",start:"111",end:"222"}]';
+comment on column adi_conversation_message_ref_graph.user_id is '所属用户 | adi_user ID';
 
 CREATE TABLE adi_file
 (
@@ -620,15 +663,9 @@ create table adi_knowledge_base_qa_ref_embedding
 
 comment on table adi_knowledge_base_qa_ref_embedding is '知识库-提问记录-向量引用列表 | Knowledge Base - Question Records - Embedding References';
 comment on column adi_knowledge_base_qa_ref_embedding.qa_record_id is '提问记录id | adi_knowledge_base_qa ID';
-comment on column adi_knowledge_base_qa_ref_embedding.embedding_id is '向量uuid | adi_knowledge_base_embedding UUID';
+comment on column adi_knowledge_base_qa_ref_embedding.embedding_id is '由消息从向量库中获取到的向量uuid | adi_knowledge_base_embedding UUID';
 comment on column adi_knowledge_base_qa_ref_embedding.score is '评分 | Score';
 comment on column adi_knowledge_base_qa_ref_embedding.user_id is '所属用户 | User ID';
-
-create trigger trigger_kb_qa_ref_update_time
-    before update
-    on adi_knowledge_base_qa_ref_embedding
-    for each row
-execute procedure update_modified_column();
 
 -- Graph RAG
 create table adi_knowledge_base_graph_segment
@@ -662,16 +699,16 @@ execute procedure update_modified_column();
 
 create table adi_knowledge_base_qa_ref_graph
 (
-    id               bigserial primary key,
-    qa_record_id     bigint default 0  not null,
-    graph_from_llm   text   default '' not null,
-    graph_from_store text   default '' not null,
-    user_id          bigint default 0  not null
+    id                     bigserial primary key,
+    qa_record_id           bigint default 0  not null,
+    entities_from_question text   default '' not null, -- 原名为 graph_from_llm
+    graph_from_store       text   default '' not null,
+    user_id                bigint default 0  not null
 );
 
 comment on table adi_knowledge_base_qa_ref_graph is '知识库-提问记录-图谱引用记录 | Knowledge Base - Question Records - Graph References';
 comment on column adi_knowledge_base_qa_ref_graph.qa_record_id is '提问记录id | adi_knowledge_base_qa ID';
-comment on column adi_knowledge_base_qa_ref_graph.graph_from_llm is 'LLM解析出来的图谱: vertexName1,vertexName2 | Graph parsed by LLM: vertexName1,vertexName2';
+comment on column adi_knowledge_base_qa_ref_graph.entities_from_question is '从问题中解析出来的实体: vertexName1,vertexName2 | Graph parsed by LLM: vertexName1,vertexName2';
 comment on column adi_knowledge_base_qa_ref_graph.graph_from_store is '从图数据库中查找得到的图谱: {vertices:[{id:"111",name:"vertexName1"},{id:"222",name:"vertexName2"}],edges:[{id:"333",name:"edgeName1",start:"111",end:"222"}] | Graph retrieved from graph database: {vertices:[{id:"111",name:"vertexName1"},{id:"222",name:"vertexName2"}],edges:[{id:"333",name:"edgeName1",start:"111",end:"222"}]';
 comment on column adi_knowledge_base_qa_ref_graph.user_id is '所属用户 | adi_user ID';
 
@@ -977,6 +1014,9 @@ VALUES ('tts_setting', '{"synthesizer_side":"client","model_name":"","platform":
 -- https://api-docs.deepseek.com/zh-cn/quick_start/pricing
 INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, is_enable)
 VALUES ('deepseek-chat', 'DeepSeek-V3', 'text', 'deepseek', 65536, 61440, 4096, false);
+INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, is_reasoner,
+                          is_thinking_closable, is_enable)
+VALUES ('deepseek-reasoner', 'DeepSeek-R1', 'text', 'deepseek', 65536, 61440, 4096, true, false, false);
 -- https://platform.openai.com/docs/models/gpt-3-5-turbo
 INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, is_enable)
 VALUES ('gpt-3.5-turbo', 'gpt3.5', 'text', 'openai', 16385, 12385, 4096, false);
@@ -993,8 +1033,9 @@ VALUES ('text-embedding-3-large', 'openai-embedding-large', 'embedding', 'openai
   "dimension": 3072
 }', false);
 -- https://help.aliyun.com/zh/dashscope/developer-reference/model-introduction?spm=a2c4g.11186623.0.i39
-INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, is_enable)
-VALUES ('qwen-turbo', '通义千问turbo', 'text', 'dashscope', 8192, 6144, 1536, false);
+INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, is_reasoner,
+                          is_thinking_closable, is_enable)
+VALUES ('qwen-turbo', '通义千问turbo', 'text', 'dashscope', 8192, 6144, 1536, true, true, false);
 -- 图片识别
 INSERT INTO adi_ai_model (name, title, type, platform, context_window, max_input_tokens, max_output_tokens, input_types,
                           is_enable)

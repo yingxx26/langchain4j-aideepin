@@ -62,13 +62,53 @@ public class AdiConstant {
 
     public static final List<String> DALLE3_CREATE_IMAGE_SIZES = List.of("1024x1024", "1024x1792", "1792x1024");
 
-    public static final PromptTemplate PROMPT_TEMPLATE = PromptTemplate.from("""
-            根据以下已知信息:
-            {{information}}
-            尽可能准确地回答用户的问题,以下是用户的问题:
+    public static final PromptTemplate PROMPT_EXTRA_TEMPLATE = PromptTemplate.from("""
+            ## 要求
+            尽可能准确地回答用户的问题
+                        
+            ## 用户的问题
             {{question}}
-            注意,回答的内容不能让用户感知到已知信息的存在
+                        
+            ## 注意
+            {{extraInfo}}
             """);
+
+    public static final PromptTemplate PROMPT_INFO_TEMPLATE = PromptTemplate.from("""
+            ## 要求
+            根据已知信息，尽可能准确地回答用户的问题
+                        
+            ## 用户的问题
+            {{question}}
+                        
+            ## 已知信息
+            {{information}}
+            
+            ## 注意
+            回答的内容不能让用户感知到已知信息的存在
+            """);
+
+    /**
+     * 可能的 extraInfo 如适用转音频的要求： 2. 回答的内容要尽量口语化，以方便将内容转成语音
+     */
+    public static final PromptTemplate PROMPT_INFO_EXTRA_TEMPLATE = PromptTemplate.from("""
+            ## 要求
+            根据已知信息，尽可能准确地回答用户的问题
+                        
+            ## 用户的问题
+            {{question}}
+                        
+            ## 已知信息
+            {{information}}
+                        
+            ## 注意
+            1. 回答的内容不能让用户感知到已知信息的存在
+            {{extraInfo}}
+            """);
+
+    public static final String PROMPT_EXTRA_AUDIO = "2. 回答的内容要尽量口语化，以方便将内容转成语音";
+
+    public static final Double LLM_TEMPERATURE_DEFAULT = 0.7D;
+    public static final Double RAG_RETRIEVE_MIN_SCORE_DEFAULT = 0.6D;
 
     public static class ConversationConstant {
         private ConversationConstant() {
@@ -190,6 +230,8 @@ public class AdiConstant {
         public static final String[] GOOGLE_LANGUAGES = {"zh-cn", "zh-tw", "af", "ak", "sq", "ws", "am", "ar", "hy", "az", "eu", "be", "bem", "bn", "bh", "xx-bork", "bs", "br", "bg", "bt", "km", "ca", "chr", "ny", "co", "hr", "cs", "da", "nl", "xx-elmer", "en", "eo", "et", "ee", "fo", "tl", "fi", "fr", "fy", "gaa", "gl", "ka", "de", "el", "kl", "gn", "gu", "xx-hacker", "ht", "ha", "haw", "iw", "hi", "hu", "is", "ig", "id", "ia", "ga", "it", "ja", "jw", "kn", "kk", "rw", "rn", "xx-klingon", "kg", "ko", "kri", "ku", "ckb", "ky", "lo", "la", "lv", "ln", "lt", "loz", "lg", "ach", "mk", "mg", "ms", "ml", "mt", "mv", "mi", "mr", "mfe", "mo", "mn", "sr-me", "my", "ne", "pcm", "nso", "no", "nn", "oc", "or", "om", "ps", "fa", "xx-pirate", "pl", "pt", "pt-br", "pt-pt", "pa", "qu", "ro", "rm", "nyn", "ru", "gd", "sr", "sh", "st", "tn", "crs", "sn", "sd", "si", "sk", "sl", "so", "es", "es-419", "su", "sw", "sv", "tg", "ta", "tt", "te", "th", "ti", "to", "lua", "tum", "tr", "tk", "tw", "ug", "uk", "ur", "uz", "vu", "vi", "cy", "wo", "xh", "yi", "yo", "zu"};
     }
 
+    public static final long SSE_TIMEOUT = (2 * 60 + 30) * 1000L; // 2.5分钟
+
     public static class SSEEventName {
         private SSEEventName() {
         }
@@ -199,7 +241,7 @@ public class AdiConstant {
         public static final String ERROR = "[ERROR]";
         public static final String META = "[META]";
         public static final String AUDIO = "[AUDIO]";
-
+        public static final String THINKING = "[THINKING]";
         public static final String AI_SEARCH_SOURCE_LINKS = "[SOURCE_LINKS]";
         public static final String WF_NODE_CHUNK = "[WF_NODE_CHUNK]";
         public static final String WF_NODE_OUTPUT = "[WF_NODE_OUTPUT]";
