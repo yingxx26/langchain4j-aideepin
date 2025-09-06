@@ -12,7 +12,7 @@ import java.util.List;
 @AskReqCheck
 public class AskReq {
 
-    @Length(min = 32, max = 32)
+   // @Length(min = 32, max = 32)
     private String conversationUuid;
 
     private String parentMessageId;

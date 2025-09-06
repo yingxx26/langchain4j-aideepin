@@ -1,2 +1,8 @@
-启动neo4j
+数据库配置key
+安装neo4j 设置插件 访问浏览器设置密码
+
+cmd启动neo4j：
 neo4j console
+
+
+-- 管理员账号：catkeeper@aideepin.com  密码：123456
