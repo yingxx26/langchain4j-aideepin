@@ -54,6 +54,22 @@ public class SSEEmitterHelper {
         return true;
     }
 
+    public boolean checkOrCompleteYxx(User user, SseEmitter sseEmitter) {
+        //Check: rate limit
+        String requestTimesKey = MessageFormat.format("user:request-text:times:{0}", user.getId());
+        if (!rateLimitHelper.checkRequestTimesYxx(requestTimesKey, LocalCache.TEXT_RATE_LIMIT_CONFIG)) {
+            sendErrorAndCompleteYxx(user.getId(), sseEmitter, "访问太过频繁");
+            return false;
+        }
+        String askingKey = MessageFormat.format(RedisKeyConstant.USER_ASKING, user.getId());
+        String askingVal = stringRedisTemplate.opsForValue().get(askingKey);
+        if (StringUtils.isNotBlank(askingVal)) {
+            sendErrorAndComplete(user.getId(), sseEmitter, "正在回复中...");
+            return false;
+        }
+        return true;
+    }
+
     public void startSse(User user, SseEmitter sseEmitter) {
         this.startSse(user, sseEmitter, null);
     }
@@ -61,7 +77,7 @@ public class SSEEmitterHelper {
     public void startSse(User user, SseEmitter sseEmitter, String data) {
 
         String askingKey = MessageFormat.format(RedisKeyConstant.USER_ASKING, user.getId());
-        stringRedisTemplate.opsForValue().set(askingKey, "1", 15, TimeUnit.SECONDS);
+        stringRedisTemplate.opsForValue().set(askingKey, "1", 15000, TimeUnit.SECONDS);
 
         String requestTimesKey = MessageFormat.format(RedisKeyConstant.USER_REQUEST_TEXT_TIMES, user.getId());
         rateLimitHelper.increaseRequestTimes(requestTimesKey, LocalCache.TEXT_RATE_LIMIT_CONFIG);
@@ -70,6 +86,25 @@ public class SSEEmitterHelper {
             if (StringUtils.isNotBlank(data)) {
                 builder.data(data);
             }
+            sseEmitter.send(builder);
+        } catch (IOException e) {
+            log.error("startSse error", e);
+            sseEmitter.completeWithError(e);
+            COMPLETED_SSE.put(sseEmitter, Boolean.TRUE);
+            stringRedisTemplate.delete(askingKey);
+        }
+    }
+
+    public void startSseYxx(User user, SseEmitter sseEmitter, String data) {
+        String askingKey = MessageFormat.format(RedisKeyConstant.USER_ASKING, user.getId());
+        stringRedisTemplate.opsForValue().set(askingKey, "1", 11500, TimeUnit.SECONDS);
+        String requestTimesKey = MessageFormat.format(RedisKeyConstant.USER_REQUEST_TEXT_TIMES, user.getId());
+        rateLimitHelper.increaseRequestTimes(requestTimesKey, LocalCache.TEXT_RATE_LIMIT_CONFIG);
+        SseEmitter.SseEventBuilder builder = SseEmitter.event().name(AdiConstant.SSEEventName.START);
+        if (StringUtils.isNotBlank(data)) {
+            builder.data(data);
+        }
+        try {
             sseEmitter.send(builder);
         } catch (IOException e) {
             log.error("startSse error", e);
@@ -205,6 +240,22 @@ public class SSEEmitterHelper {
         }
     }
 
+    public void sendErrorAndCompleteYxx(long userId, SseEmitter sseEmitter, String errorMsg) {
+        if (Boolean.TRUE.equals(COMPLETED_SSE.getIfPresent(sseEmitter))) {
+            delSseRequesting(userId);
+            return;
+        }
+        try {
+            sseEmitter.send(SseEmitter.event().name(AdiConstant.SSEEventName.ERROR).data(Objects.toString(errorMsg, "")));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            COMPLETED_SSE.put(sseEmitter, Boolean.TRUE);
+            delSseRequesting(userId);
+            sseEmitter.complete();
+        }
+    }
+
     private void delSseRequesting(long userId) {
         String askingKey = MessageFormat.format(RedisKeyConstant.USER_ASKING, userId);
         stringRedisTemplate.delete(askingKey);
@@ -255,6 +306,27 @@ public class SSEEmitterHelper {
         }
     }
 
+
+    public static void parseAndSendPartialMsgYxx(SseEmitter sseEmitter, String name, String content) {
+        if (Boolean.TRUE.equals(COMPLETED_SSE.getIfPresent(sseEmitter))) {
+            return;
+        }
+        try {
+            String[] lines = content.split("[\\e\\n]", -1);
+            if (lines.length > 1) {
+                sendPartial(sseEmitter, name, " " + lines[0]);
+                for (int i = 0; i < lines.length; i++) {
+                    sendPartial(sseEmitter, name, "-_wrap_-");
+                    sendPartial(sseEmitter, name, " " + lines[i]);
+                }
+            } else {
+                sendPartial(sseEmitter, name, " " + content);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private static void sendPartial(SseEmitter sseEmitter, String name, String msg) throws IOException {
         if (Boolean.TRUE.equals(COMPLETED_SSE.getIfPresent(sseEmitter))) {
             log.warn("sseEmitter already completed,name:{}", name);
@@ -265,6 +337,11 @@ public class SSEEmitterHelper {
         } else {
             sseEmitter.send(msg);
         }
+    }
+
+
+    private static void sendPartialYxx(SseEmitter sseEmitter, String name, String msg) throws IOException {
+
     }
 
     /**

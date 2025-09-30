@@ -66,6 +66,40 @@ public class WfNodeIODataUtil {
         return result;
     }
 
+    public static NodeIOData createNodeIODataYxx(ObjectNode data) {
+        JsonNode nameObj = data.get("name");
+        JsonNode content = data.get("content");
+        if (content == null || nameObj == null) {
+            throw new BaseException(ErrorEnum.A_PARAMS_ERROR);
+        }
+        String name = nameObj.asText();
+        Integer type = content.get("type").asInt();
+        String title = content.get("title").asText();
+        JsonNode value = content.get("value");
+        NodeIOData result = null;
+        if (WfIODataTypeEnum.TEXT.getValue().equals(type)) {
+            result = NodeIOData.createByText(name, title, value.asText());
+        } else if (WfIODataTypeEnum.NUMBER.getValue().equals(type)) {
+            result = NodeIOData.createByNumber(name, title, value.asDouble());
+        } else if (WfIODataTypeEnum.BOOL.getValue().equals(type)) {
+            result = NodeIOData.createByBool(name, title, value.asBoolean());
+        } else if (WfIODataTypeEnum.OPTIONS.getValue().equals(type)) {
+            if (value instanceof ObjectNode) {
+                result = NodeIOData.createByOptions(name, title, JsonUtil.toMap(value));
+            }
+        } else if (WfIODataTypeEnum.FILES.getValue().equals(type)) {
+            if (value.isArray()) {
+                List<String> fileUrls = new ArrayList<>();
+                Iterator<JsonNode> iterator = value.elements();
+                while (iterator.hasNext()) {
+                    fileUrls.add(iterator.next().asText());
+                }
+                result=NodeIOData.createByFiles(name,title,fileUrls);
+            }
+        }
+        return result;
+    }
+
     /**
      * 1.如果没有名称为 output 的输出参数，则需要新增 <br/>
      * 2.判断是否已经有文本类型的输出参数，如果有，则复制该参数并将参数名改为 output <br/>

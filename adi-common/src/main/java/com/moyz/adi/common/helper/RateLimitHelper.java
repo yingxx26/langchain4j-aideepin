@@ -3,6 +3,7 @@ package com.moyz.adi.common.helper;
 import com.moyz.adi.common.vo.RequestRateLimit;
 import jakarta.annotation.Resource;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.poi.util.StringUtil;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +27,15 @@ public class RateLimitHelper {
         String rateLimitVal = stringRedisTemplate.opsForValue().get(requestTimesKey);
         if (StringUtils.isNotBlank(rateLimitVal)) {
             requestCountInTimeWindow = Integer.parseInt(rateLimitVal);
+        }
+        return requestCountInTimeWindow < rateLimitConfig.getTimes();
+    }
+
+    public boolean checkRequestTimesYxx(String requestTimesKey, RequestRateLimit rateLimitConfig) {
+       int requestCountInTimeWindow=0;
+        String rateLimitVal =stringRedisTemplate.opsForValue().get(requestTimesKey);
+        if(StringUtil.isNotBlank(rateLimitVal)){
+            requestCountInTimeWindow=Integer.parseInt(rateLimitVal);
         }
         return requestCountInTimeWindow < rateLimitConfig.getTimes();
     }

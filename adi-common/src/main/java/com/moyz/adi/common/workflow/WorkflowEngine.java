@@ -58,14 +58,7 @@ public class WorkflowEngine {
     private WfState wfState;
     private WfRuntimeResp wfRuntimeResp;
 
-    public WorkflowEngine(
-            Workflow workflow,
-            SSEEmitterHelper sseEmitterHelper,
-            List<WorkflowComponent> components,
-            List<WorkflowNode> nodes,
-            List<WorkflowEdge> wfEdges,
-            WorkflowRuntimeService workflowRuntimeService,
-            WorkflowRuntimeNodeService workflowRuntimeNodeService) {
+    public WorkflowEngine(Workflow workflow, SSEEmitterHelper sseEmitterHelper, List<WorkflowComponent> components, List<WorkflowNode> nodes, List<WorkflowEdge> wfEdges, WorkflowRuntimeService workflowRuntimeService, WorkflowRuntimeNodeService workflowRuntimeNodeService) {
         this.workflow = workflow;
         this.sseEmitterHelper = sseEmitterHelper;
         this.components = components;
@@ -90,8 +83,10 @@ public class WorkflowEngine {
 
         String runtimeUuid = this.wfRuntimeResp.getUuid();
         try {
+            //获取头节点
             Pair<WorkflowNode, Set<WorkflowNode>> startAndEnds = findStartAndEndNode();
             WorkflowNode startNode = startAndEnds.getLeft();
+            //校验用户输入并组装成工作流的输入
             List<NodeIOData> wfInputs = getAndCheckUserInput(userInputs, startNode);
             //工作流运行实例状态
             this.wfState = new WfState(user, wfInputs, runtimeUuid);
@@ -109,17 +104,206 @@ public class WorkflowEngine {
             buildStateGraph(null, mainStateGraph, rootCompileNode);
 
             MemorySaver saver = new MemorySaver();
-            CompileConfig compileConfig = CompileConfig.builder()
-                    .checkpointSaver(saver)
-                    .interruptBefore(wfState.getInterruptNodes().toArray(String[]::new))
-                    .build();
+            CompileConfig compileConfig = CompileConfig.builder().checkpointSaver(saver).interruptBefore(wfState.getInterruptNodes().toArray(String[]::new)).build();
             app = mainStateGraph.compile(compileConfig);
-            RunnableConfig invokeConfig = RunnableConfig.builder()
-                    .build();
+            RunnableConfig invokeConfig = RunnableConfig.builder().build();
             exe(invokeConfig, false);
         } catch (Exception e) {
             errorWhenExe(e);
         }
+    }
+
+    /**
+     * 构建完整的stategraph
+     *
+     * @param upstreamCompileNode 上游节点
+     * @param stateGraph          当前状态图
+     * @param compileNode         当前节点
+     * @throws GraphStateException 状态图异常
+     */
+    private void buildStateGraph(CompileNode upstreamCompileNode, StateGraph<WfNodeState> stateGraph, CompileNode compileNode) throws GraphStateException {
+        log.info("buildStateGraph,upstreamCompileNode:{},node:{}", upstreamCompileNode, compileNode.getId());
+        String stateGraphNodeUuid = compileNode.getId();
+        if (null == upstreamCompileNode) {
+            //真正添加到Graph
+            addNodeToStateGraph(stateGraph, stateGraphNodeUuid);
+            addEdgeToStateGraph(stateGraph, START, compileNode.getId());
+        } else {
+            if (compileNode instanceof GraphCompileNode graphCompileNode) {
+                String stateGraphId = graphCompileNode.getId();
+                CompileNode root = graphCompileNode.getRoot();
+                String rootId = root.getId();
+                String existSubGraphId = rootToSubGraph.get(rootId);
+
+                if (StringUtils.isBlank(existSubGraphId)) {
+                    StateGraph<WfNodeState> subgraph = new StateGraph<>(stateSerializer);
+
+                    //真正添加到Graph
+                    addNodeToStateGraph(subgraph, rootId);
+                    addEdgeToStateGraph(subgraph, START, rootId);
+                    for (CompileNode child : root.getNextNodes()) {
+                        buildStateGraph(root, subgraph, child);
+                    }
+                    addEdgeToStateGraph(subgraph, graphCompileNode.getTail().getId(), END);
+                    stateGraph.addNode(stateGraphId, subgraph.compile());
+                    rootToSubGraph.put(rootId, stateGraphId);
+
+                    stateGraphNodeUuid = stateGraphId;
+                } else {
+                    stateGraphNodeUuid = existSubGraphId;
+                }
+            } else {
+                addNodeToStateGraph(stateGraph, stateGraphNodeUuid);
+            }
+
+            //ConditionalEdge 的创建另外处理
+            if (Boolean.FALSE.equals(upstreamCompileNode.getConditional())) {
+                addEdgeToStateGraph(stateGraph, upstreamCompileNode.getId(), stateGraphNodeUuid);
+            }
+        }
+        List<CompileNode> nextNodes = compileNode.getNextNodes();
+        if (nextNodes.size() > 1) {
+            boolean conditional = nextNodes.stream().noneMatch(item -> item instanceof GraphCompileNode);
+            compileNode.setConditional(conditional);
+            for (CompileNode nextNode : nextNodes) {
+                buildStateGraph(compileNode, stateGraph, nextNode);
+            }
+            //节点是"条件分支"或"分类"的情况下不支持并行执行，所以直接使用条件ConditionalEdge
+            if (conditional) {
+                List<String> targets = nextNodes.stream().map(CompileNode::getId).toList();
+                Map<String, String> mappings = new HashMap<>();
+                for (String target : targets) {
+                    mappings.put(target, target);
+                }
+                stateGraph.addConditionalEdges(stateGraphNodeUuid, edge_async(state -> state.data().get("next").toString()), mappings);
+            }
+        } else if (nextNodes.size() == 1) {
+            for (CompileNode nextNode : nextNodes) {
+                buildStateGraph(compileNode, stateGraph, nextNode);
+            }
+        } else {
+            addEdgeToStateGraph(stateGraph, stateGraphNodeUuid, END);
+        }
+    }
+
+    public void runYxx(User user, List<ObjectNode> userInputs, SseEmitter sseEmitter) {
+        this.user = user;
+        this.sseEmitter = sseEmitter;
+        if (!this.workflow.getIsEnable()) {
+            sseEmitterHelper.sendErrorAndComplete(user.getId(), sseEmitter, ErrorEnum.A_WF_DISABLED.getInfo());
+            throw new BaseException(ErrorEnum.A_WF_DISABLED);
+        }
+
+        Long workflowId = this.workflow.getId();
+        this.wfRuntimeResp = workflowRuntimeService.create(user, workflowId);
+        this.sseEmitterHelper.startSseYxx(user, sseEmitter, JsonUtil.toJson(wfRuntimeResp));
+        String runtimeUuid = this.wfRuntimeResp.getUuid();
+        Pair<WorkflowNode, Set<WorkflowNode>> startAndEndNodeYxx = findStartAndEndNodeYxx();
+        WorkflowNode startNode = startAndEndNodeYxx.getLeft();
+        List<NodeIOData> wfInputs = getAndCheckUserInputYxx(userInputs, startNode);
+        this.wfState = new WfState(user, wfInputs, runtimeUuid);
+        workflowRuntimeService.updateInput(this.wfRuntimeResp.getId(), wfState);
+        CompileNode rootCompileNode = new CompileNode();
+        rootCompileNode.setId(startNode.getUuid());
+        //构建整棵树
+        buildCompileNode(rootCompileNode, startNode);
+        StateGraph<WfNodeState> mainStateGraph = new StateGraph<>(stateSerializer);
+        this.wfState.addEdge(START, startNode.getUuid());
+    }
+
+    private void buildStateGraphYxx(CompileNode upstreamCompileNode, StateGraph<WfNodeState> stateGraph, CompileNode compileNode) throws GraphStateException {
+        log.info("buildStateGraph,upstreamCompileNode:{},node:{}", upstreamCompileNode, compileNode.getId());
+        String stateGraphNodeUuid = compileNode.getId();
+        if (null == upstreamCompileNode) {
+
+        }
+    }
+
+    private void buildCompileNodeYxx(CompileNode parentNode, WorkflowNode node) {
+        CompileNode newNode;
+        List<String> upstreamNodeUuids = getUpstreamNodeUuids(node.getUuid());
+        if (upstreamNodeUuids.isEmpty()) {
+            newNode = parentNode;
+        } else if (upstreamNodeUuids.size() == 1) {
+            String upstreamUuid = upstreamNodeUuids.get(0);
+            boolean pointToParallel = pointToParallelBranch(upstreamUuid);
+            if (pointToParallel) {
+                String rootId = node.getUuid();
+                GraphCompileNode graphCompileNode = getOrCreateGraphCompileNodeYxx(rootId);
+                appendToNextNodesYxx(parentNode, graphCompileNode);
+                newNode = graphCompileNode;
+            } else if (parentNode instanceof GraphCompileNode graphCompileNode) {
+                newNode = CompileNode.builder().id(node.getUuid()).conditional(false).nextNodes(new ArrayList<>()).build();
+                graphCompileNode.appendToLeaf(newNode);
+            } else {
+                newNode = CompileNode.builder().id(node.getUuid()).conditional(false).nextNodes(new ArrayList<>()).build();
+                appendToNextNodes(parentNode, newNode);
+            }
+        } else {
+            newNode = CompileNode.builder().id(node.getUuid()).conditional(false).nextNodes(new ArrayList<>()).build();
+            GraphCompileNode parallelBranch = nodeToParallelBranch.get(parentNode.getId());
+            appendToNextNodes(Objects.requireNonNullElse(parallelBranch, parentNode), newNode);
+        }
+
+        if (null == newNode) {
+            return;
+        }
+        List<String> downstreamUuids = getDownstreamNodeUuids(node.getUuid());
+        for (String downstreamUuid : downstreamUuids) {
+            Optional<WorkflowNode> first = wfNodes.stream().filter(item -> item.getUuid().equals(downstreamUuid)).findFirst();
+            first.ifPresent(nextNode -> buildCompileNode(newNode, nextNode));
+        }
+    }
+
+    private GraphCompileNode getOrCreateGraphCompileNodeYxx(String rootId) {
+        GraphCompileNode exist = nodeToParallelBranch.get(rootId);
+        if (null == exist) {
+            GraphCompileNode graphCompileNode = new GraphCompileNode();
+            graphCompileNode.setId("parallel_");
+            graphCompileNode.setRoot(CompileNode.builder().id(rootId).conditional(false).nextNodes(new ArrayList<>()).build());
+            nodeToParallelBranch.put(rootId, graphCompileNode);
+            exist = graphCompileNode;
+        }
+        return exist;
+    }
+
+    public Pair<WorkflowNode, Set<WorkflowNode>> findStartAndEndNodeYxx() {
+        WorkflowNode startNode = null;
+        Set<WorkflowNode> endNodes = new HashSet<>();
+        for (WorkflowNode node : wfNodes) {
+            Optional<WorkflowComponent> wfComponent = components.stream().filter(item -> item.getId().equals(node.getWorkflowComponentId())).findFirst();
+            if (wfComponent.isPresent() && WfComponentNameEnum.START.getName().equals(wfComponent.get().getName())) {
+                if (null != startNode) {
+                    throw new BaseException(ErrorEnum.A_WF_MULTIPLE_START_NODE);
+                }
+                startNode = node;
+            } else if (wfComponent.isPresent() && WfComponentNameEnum.END.getName().equals(wfComponent.get().getName())) {
+                endNodes.add(node);
+            }
+        }
+        if (null == startNode) {
+            throw new BaseException(ErrorEnum.A_WF_START_NODE_NOT_FOUND);
+        }
+        wfNodes.forEach(item -> {
+            String nodeUuid = item.getUuid();
+            boolean source = false;
+            boolean target = false;
+            for (WorkflowEdge edgeDef : wfEdges) {
+                if (edgeDef.getSourceNodeUuid().equals(nodeUuid)) {
+                    source = true;
+                } else if (edgeDef.getTargetNodeUuid().equals(nodeUuid)) {
+                    target = true;
+                }
+            }
+            if (!source && target) {
+                endNodes.add(item);
+            }
+        });
+        if (endNodes.isEmpty()) {
+            log.error("没有结束节点,workflowId:{}", startNode.getWorkflowId());
+            throw new BaseException(A_WF_END_NODE_NOT_FOUND);
+        }
+        return Pair.of(startNode, endNodes);
     }
 
     private void exe(RunnableConfig invokeConfig, boolean resume) {
@@ -186,6 +370,7 @@ public class WorkflowEngine {
 
             SSEEmitterHelper.parseAndSendPartialMsg(sseEmitter, "[NODE_RUN_" + wfNode.getUuid() + "]", JsonUtil.toJson(runtimeNodeDto));
 
+            //process执行方法，两个内部函数是回调
             NodeProcessResult processResult = abstractWfNode.process((is) -> {
                 workflowRuntimeNodeService.updateInput(runtimeNodeDto.getId(), nodeState);
                 for (NodeIOData input : nodeState.getInputs()) {
@@ -287,6 +472,37 @@ public class WorkflowEngine {
         return wfInputs;
     }
 
+    private List<NodeIOData> getAndCheckUserInputYxx(List<ObjectNode> userInputs, WorkflowNode startNode) {
+        List<WfNodeIO> defListInputs = startNode.getInputConfig().getUserInputs();
+        List<NodeIOData> wfInputs = new ArrayList<>();
+        for (WfNodeIO paramDefinition : defListInputs) {
+            String paramNameFromDef = paramDefinition.getName();
+            boolean requiredParamMissing = paramDefinition.getRequired();
+            for (ObjectNode userInput : userInputs) {
+                NodeIOData nodeIODataYxx = WfNodeIODataUtil.createNodeIODataYxx(userInput);
+                if (!paramNameFromDef.equalsIgnoreCase(nodeIODataYxx.getName())) {
+                    continue;
+                }
+                Integer dataType = nodeIODataYxx.getContent().getType();
+                if (null == dataType) {
+                    throw new BaseException(A_WF_INPUT_INVALID);
+                }
+                requiredParamMissing = false;
+                boolean valid = paramDefinition.checkValue(nodeIODataYxx);
+                if (!valid) {
+                    log.error("用户输入无效,workflowId:{}", startNode.getWorkflowId());
+                    throw new BaseException(ErrorEnum.A_WF_INPUT_INVALID);
+                }
+                wfInputs.add(nodeIODataYxx);
+            }
+            if (requiredParamMissing) {
+                log.error("在流程定义中必填的参数没有传进来,name:{}", paramNameFromDef);
+                throw new BaseException(A_WF_INPUT_MISSING);
+            }
+        }
+        return wfInputs;
+    }
+
     /**
      * 查找开始及结束节点 <br/>
      * 开始节点只能有一个，结束节点可能多个
@@ -336,11 +552,10 @@ public class WorkflowEngine {
         return Pair.of(startNode, endNodes);
     }
 
-    private void buildCompileNode(
-            CompileNode parentNode,
-            WorkflowNode node) {
+    private void buildCompileNode(CompileNode parentNode, WorkflowNode node) {
         log.info("buildByNode, parentNode:{}, node:{},title:{}", parentNode.getId(), node.getUuid(), node.getTitle());
         CompileNode newNode;
+        //查找节点上游边
         List<String> upstreamNodeUuids = getUpstreamNodeUuids(node.getUuid());
         if (upstreamNodeUuids.isEmpty()) {
             log.error("节点{}没有上游节点", node.getUuid());
@@ -348,15 +563,18 @@ public class WorkflowEngine {
         } else if (upstreamNodeUuids.size() == 1) {
             String upstreamUuid = upstreamNodeUuids.get(0);
             boolean pointToParallel = pointToParallelBranch(upstreamUuid);
+            //并行节点
             if (pointToParallel) {
                 String rootId = node.getUuid();
                 GraphCompileNode graphCompileNode = getOrCreateGraphCompileNode(rootId);
                 appendToNextNodes(parentNode, graphCompileNode);
                 newNode = graphCompileNode;
             } else if (parentNode instanceof GraphCompileNode graphCompileNode) {
+                //并行节点的子节点（多个路线）
                 newNode = CompileNode.builder().id(node.getUuid()).conditional(false).nextNodes(new ArrayList<>()).build();
                 graphCompileNode.appendToLeaf(newNode);
             } else {
+                //普通节点
                 newNode = CompileNode.builder().id(node.getUuid()).conditional(false).nextNodes(new ArrayList<>()).build();
                 appendToNextNodes(parentNode, newNode);
             }
@@ -370,6 +588,7 @@ public class WorkflowEngine {
             log.error("节点{}不存在", node.getUuid());
             return;
         }
+        //查找节点下游边
         List<String> downstreamUuids = getDownstreamNodeUuids(node.getUuid());
         for (String downstream : downstreamUuids) {
             Optional<WorkflowNode> n = wfNodes.stream().filter(item -> item.getUuid().equals(downstream)).findFirst();
@@ -377,79 +596,6 @@ public class WorkflowEngine {
         }
     }
 
-    /**
-     * 构建完整的stategraph
-     *
-     * @param upstreamCompileNode 上游节点
-     * @param stateGraph          当前状态图
-     * @param compileNode         当前节点
-     * @throws GraphStateException 状态图异常
-     */
-    private void buildStateGraph(CompileNode upstreamCompileNode, StateGraph<WfNodeState> stateGraph, CompileNode compileNode) throws GraphStateException {
-        log.info("buildStateGraph,upstreamCompileNode:{},node:{}", upstreamCompileNode, compileNode.getId());
-        String stateGraphNodeUuid = compileNode.getId();
-        if (null == upstreamCompileNode) {
-            addNodeToStateGraph(stateGraph, stateGraphNodeUuid);
-            addEdgeToStateGraph(stateGraph, START, compileNode.getId());
-        } else {
-            if (compileNode instanceof GraphCompileNode graphCompileNode) {
-                String stateGraphId = graphCompileNode.getId();
-                CompileNode root = graphCompileNode.getRoot();
-                String rootId = root.getId();
-                String existSubGraphId = rootToSubGraph.get(rootId);
-
-                if (StringUtils.isBlank(existSubGraphId)) {
-                    StateGraph<WfNodeState> subgraph = new StateGraph<>(stateSerializer);
-                    addNodeToStateGraph(subgraph, rootId);
-                    addEdgeToStateGraph(subgraph, START, rootId);
-                    for (CompileNode child : root.getNextNodes()) {
-                        buildStateGraph(root, subgraph, child);
-                    }
-                    addEdgeToStateGraph(subgraph, graphCompileNode.getTail().getId(), END);
-                    stateGraph.addNode(stateGraphId, subgraph.compile());
-                    rootToSubGraph.put(rootId, stateGraphId);
-
-                    stateGraphNodeUuid = stateGraphId;
-                } else {
-                    stateGraphNodeUuid = existSubGraphId;
-                }
-            } else {
-                addNodeToStateGraph(stateGraph, stateGraphNodeUuid);
-            }
-
-            //ConditionalEdge 的创建另外处理
-            if (Boolean.FALSE.equals(upstreamCompileNode.getConditional())) {
-                addEdgeToStateGraph(stateGraph, upstreamCompileNode.getId(), stateGraphNodeUuid);
-            }
-        }
-        List<CompileNode> nextNodes = compileNode.getNextNodes();
-        if (nextNodes.size() > 1) {
-            boolean conditional = nextNodes.stream().noneMatch(item -> item instanceof GraphCompileNode);
-            compileNode.setConditional(conditional);
-            for (CompileNode nextNode : nextNodes) {
-                buildStateGraph(compileNode, stateGraph, nextNode);
-            }
-            //节点是"条件分支"或"分类"的情况下不支持并行执行，所以直接使用条件ConditionalEdge
-            if (conditional) {
-                List<String> targets = nextNodes.stream().map(CompileNode::getId).toList();
-                Map<String, String> mappings = new HashMap<>();
-                for (String target : targets) {
-                    mappings.put(target, target);
-                }
-                stateGraph.addConditionalEdges(
-                        stateGraphNodeUuid,
-                        edge_async(state -> state.data().get("next").toString()),
-                        mappings
-                );
-            }
-        } else if (nextNodes.size() == 1) {
-            for (CompileNode nextNode : nextNodes) {
-                buildStateGraph(compileNode, stateGraph, nextNode);
-            }
-        } else {
-            addEdgeToStateGraph(stateGraph, stateGraphNodeUuid, END);
-        }
-    }
 
     private GraphCompileNode getOrCreateGraphCompileNode(String rootId) {
         GraphCompileNode exist = nodeToParallelBranch.get(rootId);
@@ -465,17 +611,11 @@ public class WorkflowEngine {
     }
 
     private List<String> getUpstreamNodeUuids(String nodeUuid) {
-        return this.wfEdges.stream()
-                .filter(edge -> edge.getTargetNodeUuid().equals(nodeUuid))
-                .map(WorkflowEdge::getSourceNodeUuid)
-                .toList();
+        return this.wfEdges.stream().filter(edge -> edge.getTargetNodeUuid().equals(nodeUuid)).map(WorkflowEdge::getSourceNodeUuid).toList();
     }
 
     private List<String> getDownstreamNodeUuids(String nodeUuid) {
-        return this.wfEdges.stream()
-                .filter(edge -> edge.getSourceNodeUuid().equals(nodeUuid))
-                .map(WorkflowEdge::getTargetNodeUuid)
-                .toList();
+        return this.wfEdges.stream().filter(edge -> edge.getSourceNodeUuid().equals(nodeUuid)).map(WorkflowEdge::getTargetNodeUuid).toList();
     }
 
     //判断节点是否属于子图
@@ -515,6 +655,29 @@ public class WorkflowEngine {
         }
     }
 
+    private void addNodeToStateGraphYxx(StateGraph<WfNodeState> stateGraph, String stateGraphNodeUuid) throws GraphStateException {
+        List<StateGraph<WfNodeState>> stateGraphList = stateGraphNodes.computeIfAbsent(stateGraphNodeUuid, k -> new ArrayList<>());
+        boolean exist = stateGraphList.stream().anyMatch(item -> item == stateGraph);
+        if (exist) {
+            log.info("state graph node exist,stateGraphNodeUuid:{}", stateGraphNodeUuid);
+            return;
+        }
+        WorkflowNode wfNode = getNodeByUuid(stateGraphNodeUuid);
+        stateGraph.addNode(stateGraphNodeUuid, node_async((state) -> runNodeYxx(wfNode, state)));
+    }
+
+    private Map<String, Object> runNodeYxx(WorkflowNode wfNode, WfNodeState nodeState) {
+        Map<String, Object> resultMap = new HashMap<>();
+
+        WorkflowComponent wfComponent = components.stream().filter(item -> item.getId().equals(wfNode.getWorkflowComponentId())).findFirst().orElseThrow();
+        AbstractWfNode abstractWfNode = WfNodeFactory.create(wfComponent, wfNode, wfState, nodeState);
+        WfRuntimeNodeDto runtimeNodeDto = workflowRuntimeNodeService.createByState(user, wfNode.getId(), wfRuntimeResp.getId(), nodeState);
+        wfState.getRuntimeNodes().add(runtimeNodeDto);
+        SSEEmitterHelper.parseAndSendPartialMsg(sseEmitter, "[NODE_RUN_" + wfNode.getUuid() + "]", JsonUtil.toJson(runtimeNodeDto));
+
+        return resultMap;
+    }
+
     private void addEdgeToStateGraph(StateGraph<WfNodeState> stateGraph, String source, String target) throws GraphStateException {
         String key = source + "_" + target;
         List<StateGraph<WfNodeState>> stateGraphList = stateGraphEdges.computeIfAbsent(key, k -> new ArrayList<>());
@@ -529,10 +692,7 @@ public class WorkflowEngine {
     }
 
     private WorkflowNode getNodeByUuid(String nodeUuid) {
-        return wfNodes.stream()
-                .filter(item -> item.getUuid().equals(nodeUuid))
-                .findFirst()
-                .orElseThrow(() -> new BaseException(ErrorEnum.A_WF_NODE_NOT_FOUND));
+        return wfNodes.stream().filter(item -> item.getUuid().equals(nodeUuid)).findFirst().orElseThrow(() -> new BaseException(ErrorEnum.A_WF_NODE_NOT_FOUND));
     }
 
     private void appendToNextNodes(CompileNode compileNode, CompileNode newNode) {
@@ -541,6 +701,13 @@ public class WorkflowEngine {
             compileNode.getNextNodes().add(newNode);
         }
 
+    }
+
+    private void appendToNextNodesYxx(CompileNode compileNode, CompileNode newNode) {
+        boolean exist = compileNode.getNextNodes().stream().anyMatch(item -> item.getId().equals(newNode.getId()));
+        if (exist) {
+            compileNode.getNextNodes().add(newNode);
+        }
     }
 
     public CompiledGraph<WfNodeState> getApp() {

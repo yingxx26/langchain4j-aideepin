@@ -64,6 +64,25 @@ public class WorkflowStarter {
         return sseEmitter;
     }
 
+
+    public SseEmitter streamingYxx(User user, String workflowUuid, List<ObjectNode> userInputs) {
+        SseEmitter sseEmitter = new SseEmitter(SSE_TIMEOUT);
+        if (!sseEmitterHelper.checkOrCompleteYxx(user, sseEmitter)) {
+            return sseEmitter;
+        }
+        Workflow workflow = workflowService.getByUuid(workflowUuid);
+        if (null == workflow) {
+            sseEmitterHelper.sendErrorAndCompleteYxx(user.getId(), sseEmitter, A_WF_NOT_FOUND.getInfo());
+            return sseEmitter;
+        } else if (Boolean.FALSE.equals(workflow.getIsEnable())) {
+            sseEmitterHelper.sendErrorAndCompleteYxx(user.getId(), sseEmitter, A_WF_DISABLED.getInfo());
+            return sseEmitter;
+        }
+        self.asyncRunYxx(user, workflow, userInputs, sseEmitter);
+        return sseEmitter;
+    }
+
+
     @Async
     public void asyncRun(User user, Workflow workflow, List<ObjectNode> userInputs, SseEmitter sseEmitter) {
         log.info("WorkflowEngine run,userId:{},workflowUuid:{},userInputs:{}", user.getId(), workflow.getUuid(), userInputs);
@@ -84,6 +103,27 @@ public class WorkflowStarter {
                 workflowRuntimeService,
                 workflowRuntimeNodeService);
         workflowEngine.run(user, userInputs, sseEmitter);
+    }
+
+
+    @Async
+    public void asyncRunYxx(User user, Workflow workflow, List<ObjectNode> userInputs, SseEmitter sseEmitter) {
+        log.info("WorkflowEngine run,userId:{},workflowUuid:{},userInputs:{}", user.getId(), workflow.getUuid(), userInputs);
+        List<WorkflowComponent> components = workflowComponentService.getAllEnable();
+        List<WorkflowNode> nodes = workflowNodeService.lambdaQuery().eq(WorkflowNode::getWorkflowId, workflow.getId())
+                .eq(WorkflowNode::getIsDeleted, false).list();
+        List<WorkflowEdge> edges = workflowEdgeService.lambdaQuery()
+                .eq(WorkflowEdge::getWorkflowId, workflow.getId())
+                .eq(WorkflowEdge::getIsDeleted, false)
+                .list();
+        WorkflowEngine workflowEngine=new WorkflowEngine(workflow,
+                sseEmitterHelper,
+                components,
+                nodes,
+                edges,
+                workflowRuntimeService,
+                workflowRuntimeNodeService);
+        workflowEngine.runYxx(user, userInputs, sseEmitter);
     }
 
     @Async

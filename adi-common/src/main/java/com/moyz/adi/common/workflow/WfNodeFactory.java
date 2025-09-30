@@ -76,4 +76,14 @@ public class WfNodeFactory {
         }
         return wfNode;
     }
+
+    public static AbstractWfNode createYxx(WorkflowComponent wfComponent, WorkflowNode nodeDefinition, WfState wfState, WfNodeState nodeState) {
+        AbstractWfNode wfNode = null;
+        switch (WfComponentNameEnum.getByName(wfComponent.getName())) {
+            case START:
+                wfNode = new StartNode(wfComponent, nodeDefinition, wfState, nodeState);
+                break;
+        }
+        return wfNode;
+    }
 }

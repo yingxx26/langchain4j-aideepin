@@ -98,6 +98,63 @@ public abstract class AbstractWfNode {
         state.getInputs().addAll(needInputs);
     }
 
+    public void initInputYxx() {
+        WfNodeInputConfig nodeInputConfig = new WfNodeInputConfig();
+        if (null == nodeInputConfig) {
+            log.info("节点输入参数没有配置");
+            return;
+        }
+        if (wfState.getCompletedNodes().isEmpty()) {
+            state.getInputs().addAll(wfState.getInput());
+            return;
+        }
+
+        List<NodeIOData> inputs = new ArrayList<>();
+        List<NodeIOData> upstreamOutputs = wfState.getLatestOutputs();
+        if (!upstreamOutputs.isEmpty()) {
+            inputs.addAll(new ArrayList<>(CollectionUtil.deepCopy(upstreamOutputs)));
+        } else {
+
+        }
+        List<WfNodeParamRef> refInputDefs = nodeInputConfig.getRefInputs();
+        inputs.addAll(changeRefersToNodeIODatasYxx(refInputDefs));
+        WfNodeInputConfig inputConfig = node.getInputConfig();
+        List<String> defInputNames = inputConfig.getRefInputs().stream().map(WfNodeParamRef::getName).collect(Collectors.toList());
+        defInputNames.addAll(inputConfig.getUserInputs().stream().map(WfNodeIO::getName).toList());
+        List<NodeIOData> list = inputs.stream().filter(item -> {
+            String needInputName = item.getName();
+            if (DEFAULT_OUTPUT_PARAM_NAME.equals(needInputName)) {
+                item.setName(DEFAULT_INPUT_PARAM_NAME);
+                return true;
+            }
+            return defInputNames.contains(needInputName);
+        }).toList();
+        state.getInputs().addAll(list);
+    }
+
+    private List<NodeIOData> changeRefersToNodeIODatasYxx(List<WfNodeParamRef> referParams) {
+        List<NodeIOData> result = new ArrayList<>();
+        for (WfNodeParamRef referParam : referParams) {
+            String nodeUuid = referParam.getNodeUuid();
+            String nodeParamName = referParam.getNodeParamName();
+            NodeIOData newInput = createByReferParamYxx(nodeUuid, nodeParamName);
+            if (null != newInput) {
+                newInput.setName(referParam.getName());
+                result.add(newInput);
+            } else {
+                log.warn("Can not find reference node output param,refNodeId:{},refNodeOutputName:{}", nodeUuid, nodeParamName);
+            }
+        }
+        return result;
+    }
+
+    public NodeIOData createByReferParamYxx(String refNodeUuid, String refNodeParamName) {
+        Optional<NodeIOData> first = wfState.getIOByNodeUuid(refNodeUuid).stream()
+                .filter(wfNodeIOData -> wfNodeIOData.getName().equalsIgnoreCase(refNodeParamName))
+                .findFirst();
+        return first.map(SerializationUtils::clone).orElse(null);
+    }
+
     /**
      * 查找引用节点的参数并转成输入输出参数
      *
@@ -140,6 +197,7 @@ public abstract class AbstractWfNode {
             }
         }
         if (null != inputConsumer) {
+            //回调
             inputConsumer.accept(state);
         }
         log.info("--node input:{}", JsonUtil.toJson(state.getInputs()));
@@ -173,6 +231,44 @@ public abstract class AbstractWfNode {
         wfState.getCompletedNodes().add(this);
         log.info("↑↑↑↑↑ node process end,name:{},uuid:{},output:{}", node.getTitle(), node.getUuid(), JsonUtil.toJson(state.getOutputs()));
         if (null != outputConsumer) {
+            //回调
+            outputConsumer.accept(state);
+        }
+        return processResult;
+    }
+
+    public NodeProcessResult processYxx(Consumer<WfNodeState> inputConsumer, Consumer<WfNodeState> outputConsumer) {
+        state.setProcessStatus(NODE_PROCESS_STATUS_DOING);
+        initInput();
+        Object humanFeedbackState = state.data().get(HUMAN_FEEDBACK_KEY);
+        if (null != humanFeedbackState) {
+            String userInput = humanFeedbackState.toString();
+            if (StringUtils.isNotBlank(userInput)) {
+                state.getInputs().add(NodeIOData.createByText(HUMAN_FEEDBACK_KEY, "default", userInput));
+            }
+        }
+        if (null != inputConsumer) {
+            inputConsumer.accept(state);
+        }
+        NodeProcessResult processResult;
+        try {
+            processResult = onProcess();
+        } catch (Exception e) {
+            state.setProcessStatus(NODE_PROCESS_STATUS_FAIL);
+            state.setProcessStatusRemark("");
+            wfState.setProcessStatus(WORKFLOW_PROCESS_STATUS_FAIL);
+            if (null != outputConsumer) {
+                outputConsumer.accept(state);
+            }
+            throw new RuntimeException(e);
+        }
+        if (!processResult.getContent().isEmpty()) {
+            state.setOutputs(processResult.getContent());
+        }
+        state.setProcessStatus(NODE_PROCESS_STATUS_SUCCESS);
+        wfState.getCompletedNodes().add(this);
+        if (null != outputConsumer) {
+            //回调
             outputConsumer.accept(state);
         }
         return processResult;

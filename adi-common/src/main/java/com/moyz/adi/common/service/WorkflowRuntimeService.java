@@ -71,6 +71,28 @@ public class WorkflowRuntimeService extends ServiceImpl<WorkflowRunMapper, Workf
         baseMapper.updateById(updateOne);
     }
 
+    public void updateInputYxx(long id, WfState wfState) {
+        if (CollectionUtils.isEmpty(wfState.getInput())) {
+            log.warn("没有输入数据,id:{}", id);
+            return;
+        }
+        WorkflowRuntime workflowRuntime = baseMapper.selectById(id);
+        if (null == workflowRuntime) {
+            log.error("工作流实例不存在,id:{}", id);
+            return;
+        }
+        WorkflowRuntime updateone = baseMapper.selectById(id);
+        updateone.setId(id);
+        ObjectNode ob = JsonUtil.createObjectNode();
+        for (NodeIOData data : wfState.getInput()) {
+            ob.set(data.getName(), JsonUtil.classToJsonNode(data.getContent()));
+        }
+        updateone.setInput(ob);
+        updateone.setStatus(WORKFLOW_PROCESS_STATUS_DOING);
+        baseMapper.updateById(updateone);
+    }
+
+
     public WorkflowRuntime updateOutput(long id, WfState wfState) {
         WorkflowRuntime node = baseMapper.selectById(id);
         if (null == node) {

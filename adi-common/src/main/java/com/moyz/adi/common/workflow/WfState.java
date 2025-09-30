@@ -63,6 +63,7 @@ public class WfState {
 
     /**
      * 获取最新的输出结果
+     * WfState->WfNodeState ->inputs/output
      *
      * @return 参数列表
      */
@@ -107,6 +108,17 @@ public class WfState {
         }
         result.addAll(optional.get().getState().getInputs());
         result.addAll(optional.get().getState().getOutputs());
+        return result;
+    }
+
+    public List<NodeIOData> getIOByNodeUuidYxx(String nodeUuid) {
+        List<NodeIOData> result = new ArrayList<>();
+        Optional<AbstractWfNode> first = completedNodes.stream().filter(node -> nodeUuid.equals(node.getNode().getUuid())).findFirst();
+        if (first.isEmpty()) {
+            return result;
+        }
+        result.addAll(first.get().getState().getInputs());
+        result.addAll(first.get().getState().getOutputs());
         return result;
     }
 

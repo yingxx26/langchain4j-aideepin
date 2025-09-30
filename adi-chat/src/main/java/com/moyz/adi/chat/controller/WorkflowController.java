@@ -70,10 +70,17 @@ public class WorkflowController {
         return workflowService.updateBaseInfo(req.getUuid(), req.getTitle(), req.getRemark(), req.getIsPublic());
     }
 
-    @Operation(summary = "流式响应")
+    /*@Operation(summary = "流式响应")
     @PostMapping(value = "/run/{wfUuid}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter sseAsk(@PathVariable String wfUuid, @RequestBody WorkflowRunReq runReq) {
         return workflowStarter.streaming(ThreadContext.getCurrentUser(), wfUuid, runReq.getInputs());
+    }*/
+
+
+    @Operation(summary = "流式响应yxx")
+    @PostMapping(value = "/run/{wfUuid}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter sseAsk(@PathVariable String wfUuid, @RequestBody WorkflowRunReq runReq) {
+        return workflowStarter.streamingYxx(ThreadContext.getCurrentUser(), wfUuid, runReq.getInputs());
     }
 
     @GetMapping("/mine/search")
