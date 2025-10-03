@@ -2,6 +2,7 @@ package com.moyz.adi.common.service;
 
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.baomidou.mybatisplus.extension.toolkit.ChainWrappers;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.moyz.adi.common.base.ThreadContext;
 import com.moyz.adi.common.dto.workflow.WfRuntimeNodeDto;
@@ -59,6 +60,28 @@ public class WorkflowRuntimeNodeService extends ServiceImpl<WorkflowRuntimeNodeM
     }
 
     public void updateInput(Long id, WfNodeState state) {
+        if (CollectionUtils.isEmpty(state.getInputs())) {
+            log.warn("没有输入数据,id:{}", id);
+            return;
+        }
+        WorkflowRuntimeNode node = baseMapper.selectById(id);
+        if (null == node) {
+            log.error("节点实例不存在,id:{}", id);
+            return;
+        }
+        WorkflowRuntimeNode updateOne = new WorkflowRuntimeNode();
+        updateOne.setId(id);
+        ObjectNode ob = JsonUtil.createObjectNode();
+        for (NodeIOData data : state.getInputs()) {
+            ob.set(data.getName(), JsonUtil.classToJsonNode(data.getContent()));
+        }
+        updateOne.setInput(ob);
+        updateOne.setStatus(state.getProcessStatus());
+        updateOne.setStatusRemark(state.getProcessStatusRemark());
+        baseMapper.updateById(updateOne);
+    }
+
+    public void updateInputYxx(Long id, WfNodeState state) {
         if (CollectionUtils.isEmpty(state.getInputs())) {
             log.warn("没有输入数据,id:{}", id);
             return;
