@@ -1,0 +1,12 @@
+
+数据库配置密码 postgres
+数据库配置 	google_setting	{"url":"https://www.googleapis.com/customsearch/v1","key":"yxx","cx":"yxx"}	 
+安装neo4j 设置插件 访问浏览器设置密码12345678
+
+cmd启动neo4j：
+neo4j console
+
+
+-- 管理员账号：catkeeper@aideepin.com  密码：123456
+
+ 

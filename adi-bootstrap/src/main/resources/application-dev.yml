@@ -3,7 +3,7 @@ spring:
     driver-class-name: org.postgresql.Driver
     url: jdbc:postgresql://127.0.0.1:5432/aideepin?useUnicode=true&characterEncoding=utf8&serverTimezone=GMT%2B8&tinyInt1isBit=false&allowMultiQueries=true
     username: postgres
-    password: 123456
+    password: postgres
     hikari:
       connection-timeout: 10000
       validation-timeout: 3000
@@ -17,7 +17,7 @@ spring:
     redis:
       host: localhost
       port: 6379
-      password:
+      password: 123456
       database: 0
       lettuce:
         pool:
@@ -50,15 +50,15 @@ adi:
   # 注意：由于不同向量模型不同维度参数生成的向量特征空间不一致，无法兼容存储于一张表并进行混合搜索，建议项目初期确定好向量模型及其维度，后期如有修改，需重新生成向量数据
   embedding-model: local:all-minilm-l6-v2
   # vector-database: pgvector、neo4j
-  vector-database: pgvector
+  vector-database: neo4j
   # graph-database: apache-age、neo4j
-  graph-database: apache-age
+  graph-database: neo4j
   datasource:
     neo4j:
       host: localhost
       port: 7687
       username: neo4j
-      password: your-db-password
+      password: 12345678
       database: neo4j
 
 local:
