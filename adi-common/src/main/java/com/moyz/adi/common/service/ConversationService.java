@@ -356,14 +356,14 @@ public class ConversationService extends ServiceImpl<ConversationMapper, Convers
     public boolean edit(String uuid, ConvEditReq convEditReq) {
         Conversation conversation = getOrThrow(uuid);
         Conversation one = new Conversation();
-        BeanUtils.copyProperties(convEditReq, one);
+        BeanUtils.copyProperties(conversation, one);
         one.setId(conversation.getId());
         if (null != convEditReq.getUnderstandContextEnable()) {
             one.setUnderstandContextEnable(convEditReq.getUnderstandContextEnable());
         }
         if (null != convEditReq.getMcpIds()) {
             List<Long> filteredMcpIds = filterEnableMcpIds(convEditReq.getMcpIds());
-            if (filteredMcpIds.isEmpty()) {
+            if (!filteredMcpIds.isEmpty()) {
                 one.setMcpIds(StringUtils.join(filteredMcpIds, ","));
             }
         }
