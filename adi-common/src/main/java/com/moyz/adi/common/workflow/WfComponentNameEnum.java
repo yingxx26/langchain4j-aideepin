@@ -40,7 +40,9 @@ public enum WfComponentNameEnum {
 
     MY_REQUEST("MyRequest"),
 
-    SQL_EXECUTOR("SqlExecutor");
+    SQL_EXECUTOR("SqlExecutor"),
+
+    DB_TABLEINFO("DbTableInfo");
 
     private final String name;
 

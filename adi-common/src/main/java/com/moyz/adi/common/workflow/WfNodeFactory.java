@@ -7,6 +7,7 @@ import com.moyz.adi.common.workflow.node.EndNode;
 import com.moyz.adi.common.workflow.node.answer.LLMAnswerNode;
 import com.moyz.adi.common.workflow.node.classifier.ClassifierNode;
 import com.moyz.adi.common.workflow.node.dalle3.Dalle3Node;
+import com.moyz.adi.common.workflow.node.dbtableinfo.DbTableInfoNode;
 import com.moyz.adi.common.workflow.node.documentextractor.DocumentExtractorNode;
 import com.moyz.adi.common.workflow.node.faqextractor.FaqExtractorNode;
 import com.moyz.adi.common.workflow.node.google.GoogleNode;
@@ -76,6 +77,9 @@ public class WfNodeFactory {
                 break;
             case SQL_EXECUTOR:
                 wfNode = new SqlExecutorNode(wfComponent, nodeDefinition, wfState, nodeState);
+                break;
+            case DB_TABLEINFO:
+                wfNode = new DbTableInfoNode(wfComponent, nodeDefinition, wfState, nodeState);
                 break;
             case END:
                 wfNode = new EndNode(wfComponent, nodeDefinition, wfState, nodeState);
