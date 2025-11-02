@@ -38,7 +38,9 @@ public enum WfComponentNameEnum {
 
     HTTP_REQUEST("HttpRequest"),
 
-    MY_REQUEST("MyRequest");
+    MY_REQUEST("MyRequest"),
+
+    SQL_EXECUTOR("SqlExecutor");
 
     private final String name;
 

@@ -16,6 +16,7 @@ import com.moyz.adi.common.workflow.node.keywordextractor.KeywordExtractorNode;
 import com.moyz.adi.common.workflow.node.knowledgeretrieval.KnowledgeRetrievalNode;
 import com.moyz.adi.common.workflow.node.mailsender.MailSendNode;
 import com.moyz.adi.common.workflow.node.myrequest.MyRequestNode;
+import com.moyz.adi.common.workflow.node.sqlexecutor.SqlExecutorNode;
 import com.moyz.adi.common.workflow.node.start.StartNode;
 import com.moyz.adi.common.workflow.node.switcher.SwitcherNode;
 import com.moyz.adi.common.workflow.node.template.TemplateNode;
@@ -72,6 +73,9 @@ public class WfNodeFactory {
                 break;
             case MY_REQUEST:
                 wfNode = new MyRequestNode(wfComponent, nodeDefinition, wfState, nodeState);
+                break;
+            case SQL_EXECUTOR:
+                wfNode = new SqlExecutorNode(wfComponent, nodeDefinition, wfState, nodeState);
                 break;
             case END:
                 wfNode = new EndNode(wfComponent, nodeDefinition, wfState, nodeState);

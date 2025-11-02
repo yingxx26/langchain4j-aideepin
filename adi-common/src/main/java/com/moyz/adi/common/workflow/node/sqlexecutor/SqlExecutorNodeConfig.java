@@ -1,27 +1,20 @@
-package com.moyz.adi.common.workflow.node.httprequest;
+package com.moyz.adi.common.workflow.node.sqlexecutor;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.util.List;
 
 @Data
-public class HttpRequestNodeConfig {
-    @NotBlank
-    private String method;
-    @NotBlank
-    private String url;
+public class SqlExecutorNodeConfig {
 
-    private List<Param> headers;
+    @NotBlank
+    private String sqlListStr;
+
+    /*private List<Param> headers;
     private List<Param> params;
-
-    /**
-     * 当前只支持:text/plain,form-data,x-www-form-urlencoded,application/json
-     * <br/>from-data暂时不支持上传文件
-     */
 
     @JsonProperty("content_type")
     private String contentType;
@@ -45,6 +38,6 @@ public class HttpRequestNodeConfig {
     public static class Param {
         private String name;
         private Object value;
-    }
+    }*/
 
 }
