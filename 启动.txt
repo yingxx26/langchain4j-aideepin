@@ -9,4 +9,6 @@ neo4j console
 
 -- 管理员账号：catkeeper@aideepin.com  密码：123456
 
- 
+聊天前端
+rundetail.vue 监听后端sse的runtimeNode，放入store。wfStore.appendRuntimeNode(wfRuntimeUuid.value, runtimeNode)
+wfruntimelist.vue循环取出store中的runtimeNodes
