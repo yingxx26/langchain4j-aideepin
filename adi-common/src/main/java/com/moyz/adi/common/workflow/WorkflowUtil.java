@@ -61,6 +61,9 @@ public class WorkflowUtil {
                 .startingNode(node.getUuid())
                 .startingState(state)
                 .build();
+        //处理流式响应：返回的Flux<ChatResponse>被包装进一个StreamingChatGenerator中。
+        //这是一个由Spring AI Alibaba Graph提供的辅助类，它能将LLM的流式输出（一个字一个字地返回）转换成Graph能够理解的AsyncGenerator<? extends NodeOutput>。
+
         StreamingChatModel streamingLLM = llmService.buildStreamingChatModel(
                 ChatModelBuilderProperties
                         .builder()
