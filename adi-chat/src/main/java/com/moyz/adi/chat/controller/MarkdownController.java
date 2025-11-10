@@ -1,7 +1,10 @@
 package com.moyz.adi.chat.controller;
 
+import com.moyz.adi.common.service.PandocService;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.jsoup.Jsoup;
@@ -11,50 +14,36 @@ import org.apache.poi.xwpf.usermodel.XWPFDocument;
 
 import java.io.*;
 import java.util.Base64;
-
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 @RestController
-@RequestMapping("/api")
+@RequestMapping("/api/export")
 public class MarkdownController {
 
-    @PostMapping("/convert")
-    public ResponseEntity<byte[]> convert(@RequestBody String markdown) throws Exception {
-        // 生成 Word 文档
-        byte[] wordBytes = generateWordDocument(markdown);
+    @Autowired
+    private PandocService pandocService;
 
-        return ResponseEntity.ok()
-                .header("Content-Disposition", "attachment; filename=document.docx")
-                .body(wordBytes);
-    }
+    @PostMapping("/word")
+    public ResponseEntity<byte[]> exportWord(@RequestBody HtmlRequest request) {
+        try {
+            byte[] wordBytes = pandocService.convertHtmlToWord(request.getHtml());
 
-    private byte[] generateWordDocument(String markdown) throws Exception {
-        XWPFDocument document = new XWPFDocument();
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("Content-Disposition", "attachment; filename=\"document.docx\"");
+            headers.add("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
 
-        // 将 Markdown 转换为 HTML
-        String html = convertMarkdownToHtml(markdown);
-
-        // 解析 HTML 并插入图片
-        Document htmlDoc = Jsoup.parse(html);
-        for (Element img : htmlDoc.select("img")) {
-            String src = img.attr("src");
-            if (src.startsWith("data:image/png;base64,")) {
-                String base64 = src.substring("data:image/png;base64,".length());
-                byte[] imageBytes = Base64.getDecoder().decode(base64);
-                int pictureIdx = Integer.parseInt(document.addPictureData(imageBytes, XWPFDocument.PICTURE_TYPE_PNG));
-                XWPFParagraph paragraph = document.createParagraph();
-                XWPFRun run = paragraph.createRun();
-                InputStream inputStream = new ByteArrayInputStream(imageBytes);
-                run.addPicture(inputStream, pictureIdx, "image.png", 200 * 24, 200 * 24);
-            }
+            return new ResponseEntity<>(wordBytes, headers, HttpStatus.OK);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);
         }
-
-        // 保存 Word 文档
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        document.write(out);
-        return out.toByteArray();
     }
 
-    private String convertMarkdownToHtml(String markdown) {
-        // 仅做简单转换，实际可使用其他库如 flexmark-java
-        return "<html><body>" + markdown + "</body></html>";
+    // 请求体实体类
+    public static class HtmlRequest {
+        private String html;
+
+        public String getHtml() { return html; }
+        public void setHtml(String html) { this.html = html; }
     }
 }
