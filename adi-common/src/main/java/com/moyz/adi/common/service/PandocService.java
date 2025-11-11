@@ -14,6 +14,7 @@ public class PandocService {
 
     /**
      * 通过Pandoc将HTML转换为Word
+     *
      * @param htmlContent 处理后的HTML内容（含图片）
      * @return Word文档字节数组
      */
@@ -29,11 +30,12 @@ public class PandocService {
         // 3. 定义输出Word文件
         String docxFileName = UUID.randomUUID() + ".docx";
         File docxFile = new File(tempDir.toFile(), docxFileName);
-
+        String pandocPath = "D:/Program Files/Pandoc/pandoc.exe"; // Windows示例
+        // String pandocPath = "/usr/local/bin/pandoc"; // Linux/macOS示例
         // 4. 构建Pandoc命令
         // 命令格式：pandoc [输入文件] -o [输出文件] --from html --to docx
         String[] command = {
-                "pandoc",
+                pandocPath,
                 htmlFile.getAbsolutePath(),
                 "-o",
                 docxFile.getAbsolutePath(),

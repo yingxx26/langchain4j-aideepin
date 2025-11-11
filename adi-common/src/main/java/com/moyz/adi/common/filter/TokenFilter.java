@@ -37,6 +37,7 @@ public class TokenFilter extends OncePerRequestFilter {
             "/workflow/public",
             "/mcp/public",
             "/sys/config/public/",
+            "/test/export/word"
     };
 
     protected static final String[] TOKEN_IN_PARAMS = {

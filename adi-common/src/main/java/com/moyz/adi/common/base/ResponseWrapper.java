@@ -8,14 +8,29 @@ import org.springframework.http.MediaType;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 
 @Slf4j
 @RestControllerAdvice(basePackages = {"com.moyz.adi"})
 public class ResponseWrapper implements ResponseBodyAdvice<Object> {
 
+
     @Override
-    public boolean supports(MethodParameter methodParameter, Class aClass) {
+    public boolean supports(MethodParameter returnType, Class aClass) {
+        // 获取当前请求路径
+        String requestPath = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes())
+                .getRequest().getRequestURI();
+
+        // 排除导出Word的接口（根据实际接口路径调整）
+        if (requestPath.contains("/api/test/export/word")) {
+            return false; // 不封装，直接返回原始byte[]
+        }
+        if (requestPath.contains("/test/export/word")) {
+            return false; // 不封装，直接返回原始byte[]
+        }
+        // 其他接口正常封装
         return true;
     }
 

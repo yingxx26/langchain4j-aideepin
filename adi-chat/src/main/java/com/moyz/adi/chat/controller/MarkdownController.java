@@ -1,29 +1,21 @@
 package com.moyz.adi.chat.controller;
 
 import com.moyz.adi.common.service.PandocService;
-import org.apache.poi.xwpf.usermodel.XWPFParagraph;
-import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.apache.poi.xwpf.usermodel.XWPFDocument;
 
-import java.io.*;
-import java.util.Base64;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 @RestController
-@RequestMapping("/api/export")
+@RequestMapping("/test")
+@CrossOrigin(origins = "http://localhost:1002")
 public class MarkdownController {
 
     @Autowired
     private PandocService pandocService;
 
-    @PostMapping("/word")
+    @PostMapping("/export/word")
     public ResponseEntity<byte[]> exportWord(@RequestBody HtmlRequest request) {
         try {
             byte[] wordBytes = pandocService.convertHtmlToWord(request.getHtml());
@@ -43,7 +35,12 @@ public class MarkdownController {
     public static class HtmlRequest {
         private String html;
 
-        public String getHtml() { return html; }
-        public void setHtml(String html) { this.html = html; }
+        public String getHtml() {
+            return html;
+        }
+
+        public void setHtml(String html) {
+            this.html = html;
+        }
     }
 }
